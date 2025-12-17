@@ -1,115 +1,106 @@
-// Assets dashboard updater (balance + incomes)
+// sb-balance.js
+// Updates balances + income widgets on my-assets.html using Supabase RPCs.
+// Calls public.get_assets_summary(p_user uuid) and updates the UI.
 //
-// This script updates the main "Asset Center" dashboard numbers:
-// - total USDT balance
-// - total personal income / today's personal income
-// - team total income / today's team income
-// - optional ring/center text amount
-//
-// It uses the SQL function `get_assets_summary(p_user uuid)` via Supabase RPC.
-// If some elements are missing, it will quietly skip them.
-//
-// Recommended (no style change, just add class names on existing elements):
-//   .assets-usdt-balance         -> "203.00 USDT" top number
-//   .total-personal-income       -> "0 USDT"
-//   .today-personal-income       -> "0 USDT"
-//   .team-total-income           -> "0 USDT"
-//   .today-team-income           -> "0 USDT"
-//   .assets-ring-amount          -> "~$203" (or just "203")
-//
-// It also keeps backward compatibility with older pages that only had `.assets-usdt-balance`.
-;
-(function () {
+// Targets in my-assets.html:
+// - .assets-usdt-balance (Total Account Assets line)
+// - .assets-usd-approx (donut center)
+// - .assets-total-personal / .assets-today-personal
+// - .assets-total-team / .assets-today-team
+// - .currency-amount[data-asset="USDT"]
+
+;(function () {
   'use strict';
 
-  function num(v) {
-    var n = Number(v);
-    return isFinite(n) ? n : 0;
+  function fmt2(n) {
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return x.toFixed(2);
   }
 
-  function fmtUSDT(v) {
-    return num(v).toFixed(2) + ' USDT';
+  function setText(el, text) {
+    if (!el) return;
+    el.textContent = text;
   }
 
-  function setText(sel, text) {
-    var el = document.querySelector(sel);
-    if (el) el.textContent = text;
-  }
+  function q(sel) { return document.querySelector(sel); }
+  function qAll(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
 
-  // Heuristic fallback: update the first element that currently contains "~$"
-  function setRingFallback(amount) {
+  async function getUserId() {
     try {
-      var nodes = document.querySelectorAll('*');
-      for (var i = 0; i < nodes.length; i++) {
-        var t = (nodes[i].textContent || '').trim();
-        if (t === '~$--' || t === '~$ --' || t.indexOf('~$') === 0) {
-          nodes[i].textContent = '~$' + String(Math.round(num(amount)));
-          return;
-        }
+      if (window.ExaAuth && typeof window.ExaAuth.ensureSupabaseUserId === 'function') {
+        var uid = await window.ExaAuth.ensureSupabaseUserId();
+        if (uid) return uid;
       }
-    } catch (_) {}
+    } catch (e) {}
+
+    try {
+      return localStorage.getItem('currentUserId') ||
+             localStorage.getItem('sb_user_id') ||
+             null;
+    } catch (e) {}
+    return null;
   }
 
-  async function fetchAssetsSummary(userId) {
-    // Supabase RPC: POST /rest/v1/rpc/get_assets_summary { "p_user": "<uuid>" }
-    if (!window.SB_CONFIG) throw new Error('SB_CONFIG missing');
-    var SB = window.SB_CONFIG;
-    var res = await fetch(SB.url + '/rest/v1/rpc/get_assets_summary', {
+  async function rpcGetAssetsSummary(userId) {
+    if (!window.SB_CONFIG || !SB_CONFIG.url) throw new Error('SB_CONFIG missing');
+    var url = SB_CONFIG.url + '/rest/v1/rpc/get_assets_summary';
+    var res = await fetch(url, {
       method: 'POST',
-      headers: SB.headers(),
+      headers: SB_CONFIG.headers(),
       body: JSON.stringify({ p_user: userId })
     });
+
     if (!res.ok) {
-      var err;
-      try { err = await res.text(); } catch (_) {}
-      throw new Error(err || 'Failed to load assets summary');
+      var t = '';
+      try { t = await res.text(); } catch (e) {}
+      throw new Error('RPC get_assets_summary failed: ' + res.status + ' ' + t);
     }
+
     var data = await res.json();
-    // PostgREST returns either an object or array depending on config; normalize:
     if (Array.isArray(data)) return data[0] || {};
     return data || {};
   }
 
-  async function update() {
-    if (!window.ExaAuth) return;
-    var userId = await window.ExaAuth.ensureSupabaseUserId();
-    if (!userId) return;
+  function applyToUI(summary) {
+    var usdt = fmt2(summary.usdt_balance);
+    var totalPersonal = fmt2(summary.total_personal);
+    var todayPersonal = fmt2(summary.today_personal);
+    var totalTeam = fmt2(summary.total_team);
+    var todayTeam = fmt2(summary.today_team);
 
-    try {
-      var s = await fetchAssetsSummary(userId);
+    setText(q('.assets-usdt-balance'), usdt + ' USDT');
 
-      var usdt = num(s.usdt_balance);
-      var totalPersonal = num(s.total_personal);
-      var todayPersonal = num(s.today_personal);
-      var totalTeam = num(s.total_team);
-      var todayTeam = num(s.today_team);
+    // User requested: donut center shows the same number as the total (203)
+    setText(q('.assets-usd-approx'), usdt);
 
-      // Main balance
-      setText('.assets-usdt-balance', fmtUSDT(usdt));
+    setText(q('.assets-total-personal'), totalPersonal + ' USDT');
+    setText(q('.assets-today-personal'), todayPersonal + ' USDT');
+    setText(q('.assets-total-team'), totalTeam + ' USDT');
+    setText(q('.assets-today-team'), todayTeam + ' USDT');
 
-      // Incomes (optional, if you add these classes in HTML)
-      setText('.total-personal-income', fmtUSDT(totalPersonal));
-      setText('.today-personal-income', fmtUSDT(todayPersonal));
-      setText('.team-total-income', fmtUSDT(totalTeam));
-      setText('.today-team-income', fmtUSDT(todayTeam));
+    qAll('.currency-amount[data-asset="USDT"]').forEach(function (el) {
+      setText(el, usdt);
+    });
+  }
 
-      // Ring center amount (optional)
-      var ringEl = document.querySelector('.assets-ring-amount');
-      if (ringEl) {
-        // Many designs show "~$203" without decimals
-        ringEl.textContent = '~$' + String(Math.round(usdt));
-      } else {
-        // best-effort fallback if you didn't add class
-        setRingFallback(usdt);
-      }
-    } catch (e) {
-      // ignore errors to avoid breaking UI
-    }
+  async function refresh() {
+    var uid = await getUserId();
+    if (!uid) return;
+    var summary = await rpcGetAssetsSummary(uid);
+    applyToUI(summary || {});
+  }
+
+  function start() {
+    refresh().catch(function () {});
+    setInterval(function () {
+      refresh().catch(function () {});
+    }, 10000);
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', update);
+    document.addEventListener('DOMContentLoaded', start);
   } else {
-    update();
+    start();
   }
 })();
