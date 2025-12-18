@@ -1,84 +1,191 @@
-// my-team-helper.js - binds my-team.html to Supabase via DemoWallet (no styling changes)
-;(function(){
+// my-team-helper.js - Show funded vs not-funded per generation using RPC get_my_team()
+;(function () {
   'use strict';
+
   function qs(sel, root){ return (root || document).querySelector(sel); }
   function qsa(sel, root){ return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
-  function maskPhone(p){
-    if (!p) return '-';
-    var s = String(p);
-    if (s.length <= 4) return s;
-    return s.slice(0,2) + '****' + s.slice(-2);
+  function fmt2(n){
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return x.toFixed(2);
   }
+
   function fmtDate(ts){
-    if (!ts) return '-';
+    if (!ts) return "-";
     try {
       var d = new Date(ts);
-      if (isNaN(d.getTime())) return String(ts);
-      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString().slice(0,5);
-    } catch (e) { return String(ts); }
+      if (isNaN(d.getTime())) return "-";
+      var yyyy = d.getFullYear();
+      var mm = String(d.getMonth() + 1).padStart(2,'0');
+      var dd = String(d.getDate()).padStart(2,'0');
+      var hh = String(d.getHours()).padStart(2,'0');
+      var mi = String(d.getMinutes()).padStart(2,'0');
+      var ss = String(d.getSeconds()).padStart(2,'0');
+      return yyyy + '-' + mm + '-' + dd + ' ' + hh + ':' + mi + ':' + ss;
+    } catch(e){ return "-"; }
+  }
+
+  function maskPhone(p){
+    if (!p) return "-";
+    var s = String(p).trim();
+    if (s.length <= 6) return s;
+    return s.slice(0, 3) + "****" + s.slice(-3);
+  }
+
+  function getUserIdFallback(){
+    try {
+      return (localStorage.getItem('currentUserId') || localStorage.getItem('sb_user_id_v1') || '').trim();
+    } catch(e){ return ''; }
+  }
+
+  async function getUserId(){
+    try {
+      if (window.ExaAuth && typeof window.ExaAuth.ensureSupabaseUserId === 'function') {
+        var id = await window.ExaAuth.ensureSupabaseUserId();
+        return (id || '').trim();
+      }
+    } catch(e){}
+    return getUserIdFallback();
+  }
+
+  async function rpc(name, body){
+    if (window.DemoWallet && typeof window.DemoWallet.rpc === 'function') {
+      return await window.DemoWallet.rpc(name, body || {});
+    }
+    var SB = window.SB_CONFIG;
+    if (!SB) throw new Error('SB_CONFIG missing');
+    var res = await fetch(SB.url.replace(/\/$/,'') + '/rest/v1/rpc/' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: SB.headers(),
+      body: JSON.stringify(body || {})
+    });
+    var text = await res.text();
+    var data;
+    try { data = text ? JSON.parse(text) : null; } catch(e){ data = text; }
+    if (!res.ok) {
+      var msg = (data && (data.message || data.error || data.details)) ? (data.message || data.error || data.details) : ('RPC ' + name + ' failed');
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  function setText(sel, txt){
+    var el = qs(sel);
+    if (el) el.textContent = txt;
+  }
+
+  function setSummary(teamEffective, teamTotal, todayTeam, totalTeam){
+    var values = qsa('.summary-box .summary-value');
+    if (values[0]) values[0].textContent = teamEffective + '/' + teamTotal;
+    if (values[1]) values[1].textContent = fmt2(todayTeam) + '/' + fmt2(totalTeam);
+  }
+
+  function updateGenCard(idx, effective, total, percent, incomeToday, incomeTotal){
+    var cards = qsa('.generation-card');
+    var card = cards[idx];
+    if (!card) return;
+    var spans = qsa('.generation-values span', card);
+    if (spans[0]) spans[0].textContent = effective + '/' + total;
+    if (spans[1]) spans[1].textContent = String(percent) + '%';
+    if (spans[2]) spans[2].textContent = fmt2(incomeToday) + '/' + fmt2(incomeTotal);
+  }
+
+  function normalizeLevel(v){
+    if (!v) return 'LV.0';
+    var s = String(v);
+    if (s.toUpperCase().startsWith('V')) return 'LV.' + s.slice(1);
+    if (s.toUpperCase().startsWith('LV')) return s;
+    return s;
+  }
+
+  function renderTable(rowsDepth1){
+    var tbody = qs('.team-table tbody');
+    if (!tbody) return;
+    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+    if (!rowsDepth1 || !rowsDepth1.length) {
+      var tr = document.createElement('tr');
+      ['-','-','-','-'].forEach(function(t){
+        var td = document.createElement('td'); td.textContent = t; tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+      return;
+    }
+
+    rowsDepth1.forEach(function(m){
+      var tr = document.createElement('tr');
+
+      var phone = maskPhone(m.phone || m.member_phone);
+      var pid = (m.public_id != null ? String(m.public_id) : '');
+      var shortId = pid || String(m.user_id || m.member_id || m.id || '').slice(0,8) || '-';
+      var lvl = normalizeLevel(m.current_level || m.level);
+      var funded = (m.is_funded === true) || (String(m.is_funded).toLowerCase() === 'true');
+
+      // Put funded marker without changing style
+      var lvlText = lvl + (funded ? ' ✅' : ' ❌');
+
+      [phone, shortId, lvlText, fmtDate(m.created_at || m.member_created_at)].forEach(function(t){
+        var td = document.createElement('td');
+        td.textContent = t;
+        tr.appendChild(td);
+      });
+
+      tbody.appendChild(tr);
+    });
   }
 
   async function load(){
-    if (!window.DemoWallet) return;
+    var uid = await getUserId();
+    if (!uid) return;
 
-    // Income summary cards on this page (same labels as dashboard)
+    // Team rows (depth 1..3) with is_funded/is_activated/current_level
+    var team = await rpc('get_my_team', { p_user: uid });
+    if (!Array.isArray(team)) team = [];
+
+    // Income summary
+    var sum = null;
     try {
-      var sum = await window.DemoWallet.getAssetsSummary();
-      if (sum) {
-        var vals = qsa('.summary-card .summary-value');
-        if (vals[0]) vals[0].textContent = (Number(sum.total_personal||0)).toFixed(2) + ' USDT';
-        if (vals[1]) vals[1].textContent = (Number(sum.total_team||0)).toFixed(2) + ' USDT';
-        if (vals[2]) vals[2].textContent = (Number(sum.today_personal||0)).toFixed(2) + ' USDT';
-        if (vals[3]) vals[3].textContent = (Number(sum.today_team||0)).toFixed(2) + ' USDT';
-      }
-    } catch (e) {}
+      var rows = await rpc('get_assets_summary', { p_user: uid });
+      sum = Array.isArray(rows) ? rows[0] : rows;
+    } catch(e){}
 
-    var team = null;
-    try { team = await window.DemoWallet.getTeamSummary(); } catch (e) { team = null; }
-    if (!team) team = { members: [], byDepth: {1:0,2:0,3:0}, totalMembers: 0, fundedMembers: 0 };
+    var todayTeam = sum ? (sum.today_team || 0) : 0;
+    var totalTeam = sum ? (sum.total_team || 0) : 0;
 
-    // Generation cards
-    var cards = qsa('.generation-card');
-    function renderGen(i, total){
-      var card = cards[i];
-      if (!card) return;
-      var row = card.querySelector('.generation-values');
-      if (!row) return;
-      var spans = row.querySelectorAll('span');
-      if (spans.length >= 1) spans[0].textContent = total + '/' + total;
-      if (spans.length >= 2) spans[1].textContent = '0%';
-      if (spans.length >= 3) spans[2].textContent = '0/0';
+    var byDepth = {1: [], 2: [], 3: []};
+    team.forEach(function(r){
+      var d = Number(r.depth || r.gen || r.generation || 0);
+      if (d === 1 || d === 2 || d === 3) byDepth[d].push(r);
+    });
+
+    function countEffective(arr){
+      return arr.filter(function(r){
+        return (r.is_funded === true) || (String(r.is_funded).toLowerCase() === 'true');
+      }).length;
     }
-    renderGen(0, team.byDepth[1] || 0);
-    renderGen(1, team.byDepth[2] || 0);
-    renderGen(2, team.byDepth[3] || 0);
 
-    // Table = Gen 1 members
-    var tbody = qs('tbody');
-    if (tbody) {
-      var gen1 = (team.members || []).filter(function(m){ return Number(m.depth||0) === 1; });
-      if (gen1.length) {
-        tbody.innerHTML = '';
-        gen1.forEach(function(m){
-          var tr = document.createElement('tr');
-          tr.innerHTML = ''
-            + '<td>' + (m.public_id != null ? m.public_id : '-') + '</td>'
-            + '<td>' + maskPhone(m.phone) + '</td>'
-            + '<td>' + (m.is_funded ? 'Active' : 'Inactive') + '</td>'
-            + '<td>' + (m.depth ? ('LV.' + m.depth) : '-') + '</td>'
-            + '<td>' + fmtDate(m.created_at) + '</td>'
-            + '<td>0.00</td>'
-            + '<td>0.00</td>';
-          tbody.appendChild(tr);
-        });
-      }
-    }
+    var t1 = byDepth[1].length, e1 = countEffective(byDepth[1]);
+    var t2 = byDepth[2].length, e2 = countEffective(byDepth[2]);
+    var t3 = byDepth[3].length, e3 = countEffective(byDepth[3]);
+
+    var totalAll = t1 + t2 + t3;
+    var effectiveAll = e1 + e2 + e3;
+
+    setSummary(effectiveAll, totalAll, todayTeam, totalTeam);
+
+    // Percentages fixed per your system
+    updateGenCard(0, e1, t1, 20, todayTeam, totalTeam);
+    updateGenCard(1, e2, t2, 5, 0, 0);
+    updateGenCard(2, e3, t3, 3, 0, 0);
+
+    // Table shows Generation 1 list by default
+    renderTable(byDepth[1]);
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', load);
+    document.addEventListener('DOMContentLoaded', function(){ load().catch(function(e){ try{console.error(e);}catch(_){} }); });
   } else {
-    load();
+    load().catch(function(e){ try{console.error(e);}catch(_){} });
   }
 })();
