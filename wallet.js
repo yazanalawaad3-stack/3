@@ -1,132 +1,95 @@
-
-// wallet.js (DB-driven)
-// Uses Supabase RPC functions from your SQL system:
-// - get_assets_summary(p_user uuid)
-// - perform_ipower_action(p_user uuid)
-// - request_withdrawal(p_user, p_currency, p_network, p_amount, p_address)
-//
-// This file intentionally avoids "local balance caching" logic that can conflict
-// with triggers/commissions on the database.
-
+// wallet.js - RPC-first wallet + AI Power helpers for your Supabase schema
 ;(function () {
   'use strict';
 
   var SB = window.SB_CONFIG;
   if (!SB) {
-    console.error('SB_CONFIG is not defined. Ensure sb-config.js is loaded before wallet.js.');
+    console.error('SB_CONFIG is not defined. Ensure sb-config.js is loaded first.');
     return;
   }
 
+  var USER_ID_KEY = 'sb_user_id_v1';
+
   function getUserId() {
-    try { return localStorage.getItem('currentUserId') || null; } catch (e) { return null; }
+    try { return (localStorage.getItem(USER_ID_KEY) || '').trim(); } catch (e) { return ''; }
   }
 
-  async function rpc(fn, bodyObj) {
-    var url = SB.url + '/rest/v1/rpc/' + encodeURIComponent(fn);
+  function fmtUSDT(n) {
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return x.toFixed(2) + ' USDT';
+  }
+
+  async function rpc(fnName, payload) {
+    var url = SB.url.replace(/\/$/, '') + '/rest/v1/rpc/' + encodeURIComponent(fnName);
     var res = await fetch(url, {
       method: 'POST',
       headers: SB.headers(),
-      body: JSON.stringify(bodyObj || {})
+      body: JSON.stringify(payload || {})
     });
-    var txt = '';
+    var text = await res.text();
+    var data;
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+
     if (!res.ok) {
-      try { txt = await res.text(); } catch (_) {}
-      // Try to surface PostgREST error JSON if present
-      var msg = txt;
-      try {
-        var j = JSON.parse(txt);
-        msg = j.message || j.details || j.hint || txt;
-      } catch (_) {}
-      throw new Error(msg || ('RPC ' + fn + ' failed'));
+      // Try to surface a helpful message
+      var msg = (data && (data.message || data.error || data.details)) ? (data.message || data.error || data.details) : ('RPC ' + fnName + ' failed');
+      var err = new Error(msg);
+      err.status = res.status;
+      err.payload = data;
+      throw err;
     }
-    // RPC may return json array or object
-    return await res.json();
+    return data;
   }
 
-  function num(v) {
-    var n = typeof v === 'number' ? v : parseFloat(v);
-    return isNaN(n) ? 0 : n;
+  async function getAssetsSummary(userId) {
+    var uid = userId || getUserId();
+    if (!uid) throw new Error('Missing user session');
+    // Function returns a single row object
+    return await rpc('get_assets_summary', { p_user: uid });
   }
 
-  function fmtUSDT(v) {
-    return num(v).toFixed(2) + ' USDT';
+  async function performIpowerAction(userId) {
+    var uid = userId || getUserId();
+    if (!uid) throw new Error('Missing user session');
+    // perform_ipower_action is a set-returning function -> array of rows
+    var rows = await rpc('perform_ipower_action', { p_user: uid });
+    if (Array.isArray(rows)) return rows[0] || null;
+    return rows;
   }
 
-  // -----------------------------
-  // Public API
-  // -----------------------------
+  async function requestWithdrawal(opts) {
+    opts = opts || {};
+    var uid = opts.user_id || getUserId();
+    if (!uid) throw new Error('Missing user session');
 
-  /**
-   * Returns the asset summary for the logged-in user.
-   * { usdt_balance, total_personal, today_personal, total_team, today_team }
-   */
-  async function getAssetsSummary() {
-    var userId = getUserId();
-    if (!userId) throw new Error('Not logged in');
-    var rows = await rpc('get_assets_summary', { p_user: userId });
-    // SQL returns a rowset; PostgREST gives an array
-    var row = Array.isArray(rows) && rows[0] ? rows[0] : (rows || {});
-    return {
-      usdt_balance: num(row.usdt_balance),
-      total_personal: num(row.total_personal),
-      today_personal: num(row.today_personal),
-      total_team: num(row.total_team),
-      today_team: num(row.today_team)
-    };
+    return await rpc('request_withdrawal', {
+      p_user: uid,
+      p_amount: Number(opts.amount || 0),
+      p_currency: String(opts.currency || 'usdt'),
+      p_network: String(opts.network || 'bep20'),
+      p_address: String(opts.address || '').trim()
+    });
   }
 
-  /**
-   * Performs the AI Power action (once per 24h). DB will:
-   * - insert ipower_actions
-   * - update wallet_balances
-   * - distribute referral commissions
-   * Returns { action_id, earning_amount, new_balance, out_created_at }
-   */
-  async function runAiPower() {
-    var userId = getUserId();
-    if (!userId) throw new Error('Not logged in');
-    var rows = await rpc('perform_ipower_action', { p_user: userId });
-    var row = Array.isArray(rows) && rows[0] ? rows[0] : (rows || {});
-    return {
-      action_id: row.action_id,
-      earning_amount: num(row.earning_amount),
-      new_balance: num(row.new_balance),
-      out_created_at: row.out_created_at
-    };
-  }
+  async function getUserState(userId) {
+    var uid = userId || getUserId();
+    if (!uid) throw new Error('Missing user session');
 
-  /**
-   * Submit withdrawal request using the DB rules.
-   */
-  async function requestWithdraw(currency, network, amount, address) {
-    var userId = getUserId();
-    if (!userId) throw new Error('Not logged in');
-    var payload = {
-      p_user: userId,
-      p_currency: String(currency || 'usdt').toLowerCase(),
-      p_network: String(network || 'trc20').toLowerCase(),
-      p_amount: num(amount),
-      p_address: String(address || '')
-    };
-    var rows = await rpc('request_withdrawal', payload);
-    var row = Array.isArray(rows) && rows[0] ? rows[0] : (rows || {});
-    return row;
-  }
-
-  function getUser() {
-    var uid = null, phone = null;
-    try {
-      uid = localStorage.getItem('currentUserId') || null;
-      phone = localStorage.getItem('currentPhone') || null;
-    } catch (e) {}
-    return { id: uid, phone: phone };
+    var url = SB.url.replace(/\/$/, '') + '/rest/v1/user_state?select=current_level,is_locked,is_funded,is_activated&user_id=eq.' + encodeURIComponent(uid) + '&limit=1';
+    var res = await fetch(url, { method: 'GET', headers: SB.headers() });
+    if (!res.ok) return null;
+    var rows = await res.json();
+    return (Array.isArray(rows) && rows[0]) ? rows[0] : null;
   }
 
   window.DemoWallet = {
-    getUser: getUser,
+    getUserId: getUserId,
+    fmtUSDT: fmtUSDT,
+    rpc: rpc,
     getAssetsSummary: getAssetsSummary,
-    runAiPower: runAiPower,
-    requestWithdraw: requestWithdraw,
-    fmtUSDT: fmtUSDT
+    performIpowerAction: performIpowerAction,
+    requestWithdrawal: requestWithdrawal,
+    getUserState: getUserState
   };
 })();

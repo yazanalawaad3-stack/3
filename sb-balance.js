@@ -1,14 +1,4 @@
-
-// sb-balance.js (Asset Center updater)
-// Reads DB summary using DemoWallet.getAssetsSummary() and updates:
-// - .assets-usdt-balance
-// - .assets-usd-approx (inside donut)
-// - .assets-total-personal
-// - .assets-today-personal
-// - .assets-total-team
-// - .assets-today-team
-// - Currency list USDT amount: .currency-amount[data-asset="USDT"]
-
+// sb-balance.js - Updates my-assets.html numbers using get_assets_summary RPC
 ;(function () {
   'use strict';
 
@@ -17,50 +7,43 @@
     if (el) el.textContent = text;
   }
 
-  function setAllText(selector, text) {
-    document.querySelectorAll(selector).forEach(function (el) { el.textContent = text; });
+  function fmt2(n) {
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return x.toFixed(2);
   }
 
-  function num(v) {
-    var n = typeof v === 'number' ? v : parseFloat(v);
-    return isNaN(n) ? 0 : n;
-  }
-
-  async function update() {
-    if (!window.DemoWallet || !window.ExaAuth) return;
-    var userId = await window.ExaAuth.ensureSupabaseUserId();
-    if (!userId) return;
-
+  async function refresh() {
     try {
-      var s = await window.DemoWallet.getAssetsSummary();
+      if (!window.DemoWallet || typeof window.DemoWallet.getAssetsSummary !== 'function') return;
 
-      // Main balance display
-      var bal = num(s.usdt_balance);
-      setAllText('.assets-usdt-balance', bal.toFixed(2) + ' USDT');
+      var data = await window.DemoWallet.getAssetsSummary();
+      if (!data) return;
 
-      // Donut center value (approx) — match balance (your design uses "$")
-      setText('.assets-usd-approx', bal.toFixed(2));
+      var bal = data.usdt_balance ?? data.total_assets ?? 0;
 
-      // Income stats
-      setAllText('.assets-total-personal', num(s.total_personal).toFixed(2) + ' USDT');
-      setAllText('.assets-today-personal', num(s.today_personal).toFixed(2) + ' USDT');
-      setAllText('.assets-total-team', num(s.total_team).toFixed(2) + ' USDT');
-      setAllText('.assets-today-team', num(s.today_team).toFixed(2) + ' USDT');
+      setText('.assets-usdt-balance', fmt2(bal) + ' USDT');
+      setText('.assets-usd-approx', fmt2(bal)); // show same number inside donut
 
-      // Currency list USDT amount row
+      setText('.assets-total-personal', fmt2(data.total_personal) + ' USDT');
+      setText('.assets-today-personal', fmt2(data.today_personal) + ' USDT');
+
+      setText('.assets-total-team', fmt2(data.total_team) + ' USDT');
+      setText('.assets-today-team', fmt2(data.today_team) + ' USDT');
+
+      // currency list USDT amount
       document.querySelectorAll('.currency-amount[data-asset="USDT"]').forEach(function (el) {
-        el.textContent = bal.toFixed(2);
+        el.textContent = fmt2(bal);
       });
     } catch (e) {
-      // If something fails, show nothing (but log for debugging)
-      console.error('[sb-balance] update failed:', e && e.message ? e.message : e);
+      try { console.warn('sb-balance refresh failed:', e && e.message ? e.message : e); } catch (_) {}
     }
   }
 
   function start() {
-    update();
-    // Optional periodic refresh
-    setInterval(update, 15000);
+    refresh();
+    // refresh every 20s to keep it in sync after AI Power runs
+    setInterval(refresh, 20000);
   }
 
   if (document.readyState === 'loading') {
