@@ -2,26 +2,33 @@
 //
 // This script defines a global `ExaAuth` object that provides methods
 // for registering new users and logging existing users in using the
-// Supabase REST API. It stores minimal session information in the
-// browser's localStorage so that other pages can identify the current
-// user. Passwords are stored locally on the device and are never
-// transmitted to Supabase; the backend keeps no record of user
-// passwords. Invitation codes are validated by database triggers in
-// Supabase.
+// Supabase REST API.
+//
+// IMPORTANT (per your system):
+// - No UI/style changes.
+// - No server-side auth; this is a lightweight "demo auth" that stores the
+//   current user id in localStorage so pages can load the right data.
 
 ;(function () {
   'use strict';
 
-  // Ensure configuration is present
   var SB = window.SB_CONFIG;
   if (!SB) {
     console.error('SB_CONFIG is not defined. Ensure sb-config.js is loaded before auth.js.');
     return;
   }
 
+  // ----------------------------
+  // Helpers
+  // ----------------------------
+
+  function cleanDigits(s) {
+    return String(s || '').replace(/\D/g, '');
+  }
+
   /**
-   * Normalize a phone number by concatenating the area code prefix and
-   * the number's digits. Leading plus signs in the prefix are removed.
+   * Normalize a phone number by concatenating the area code prefix and the digits.
+   * Leading plus signs in the prefix are removed.
    *
    * @param {string} prefix The international dialing code, e.g. "+961"
    * @param {string} digits The phone number digits, e.g. "70123456"
@@ -29,67 +36,169 @@
    */
   function fullPhone(prefix, digits) {
     var pre = String(prefix || '').replace(/^\+/, '');
-    var num = String(digits || '').replace(/\D/g, '');
+    var num = cleanDigits(digits);
+    // If the user already typed the full number including country code, keep it.
+    // Example: prefix "+386" and digits "38670123456" => "38670123456"
+    if (num && pre && num.indexOf(pre) === 0) return num;
     return pre + num;
   }
 
+  function firstMatch(selList, root) {
+    root = root || document;
+    for (var i = 0; i < selList.length; i++) {
+      try {
+        var el = root.querySelector(selList[i]);
+        if (el) return el;
+      } catch (e) {}
+    }
+    return null;
+  }
+
   /**
-   * Helper to fetch a user row by phone number. Returns the first match
-   * or null if no user exists.
+   * Try to read phone prefix + phone digits from the current page without
+   * relying on fixed IDs (because your HTML might use different selectors).
    *
-   * @param {string} phone The full phone number (no spaces or plus sign)
-   * @returns {Promise<object|null>} The user record or null
+   * @returns {{prefix:string, digits:string, full:string}}
    */
+  function readPhoneFromPage() {
+    var prefixEl = firstMatch([
+      'select[name*="code"]',
+      'select[name*="country"]',
+      'select[id*="code"]',
+      'select[id*="country"]',
+      'select'
+    ]);
+
+    // Prefer explicit phone inputs
+    var phoneEl =
+      firstMatch([
+        'input[type="tel"]',
+        'input[name="phone"]',
+        'input[name*="phone"]',
+        'input[id="phone"]',
+        'input[id*="phone"]',
+        '.phone-wrapper input'
+      ]) || null;
+
+    // If not found, pick the first non-password text-like input (but not invite/verification)
+    if (!phoneEl) {
+      var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
+      for (var i = 0; i < inputs.length; i++) {
+        var inp = inputs[i];
+        var t = (inp.getAttribute('type') || 'text').toLowerCase();
+        if (t === 'password' || t === 'hidden') continue;
+        var key = ((inp.getAttribute('name') || '') + ' ' + (inp.id || '') + ' ' + (inp.className || '')).toLowerCase();
+        if (key.indexOf('invite') !== -1) continue;
+        if (key.indexOf('verify') !== -1) continue;
+        if (key.indexOf('code') !== -1) continue;
+        phoneEl = inp;
+        break;
+      }
+    }
+
+    var prefix = prefixEl ? String(prefixEl.value || '').trim() : '';
+    var digits = phoneEl ? String(phoneEl.value || '').trim() : '';
+    return { prefix: prefix, digits: digits, full: fullPhone(prefix, digits) };
+  }
+
+  function readInviteFromPage() {
+    var el = firstMatch([
+      'input[name*="invite"]',
+      'input[id*="invite"]',
+      'input[placeholder*="Invite"]',
+      'input[placeholder*="Invitation"]'
+    ]);
+    return el ? String(el.value || '').trim() : '';
+  }
+
   async function fetchUserByPhone(phone) {
     if (!phone) return null;
-    var url = SB.url + '/rest/v1/users?select=id,phone,invite_code,public_id,created_at&phone=eq.' + encodeURIComponent(phone);
+    var url =
+      SB.url +
+      '/rest/v1/users?select=id,phone,invite_code,public_id,created_at&phone=eq.' +
+      encodeURIComponent(phone) +
+      '&limit=1';
     var res = await fetch(url, { method: 'GET', headers: SB.headers() });
     if (!res.ok) return null;
     var rows = await res.json();
     return Array.isArray(rows) && rows.length ? rows[0] : null;
   }
 
+  async function fetchUserById(id) {
+    if (!id) return null;
+    var url =
+      SB.url +
+      '/rest/v1/users?select=id,phone,invite_code,public_id,created_at&' +
+      'id=eq.' +
+      encodeURIComponent(id) +
+      '&limit=1';
+    var res = await fetch(url, { method: 'GET', headers: SB.headers() });
+    if (!res.ok) return null;
+    var rows = await res.json();
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  }
+
+  // ----------------------------
+  // Public API
+  // ----------------------------
+
   /**
-   * Register a new user using an invitation code. The phone number must
-   * be unique. When the first user registers the invitation code can
-   * be omitted; subsequent users must provide a valid invitation code
-   * belonging to an existing user. On success the newly created user
-   * record is returned and localStorage is updated with the current
-   * user's ID and phone. The password typed by the user should be
-   * stored by the caller in localStorage under the key `pw:{userId}`.
+   * Register a new user using an invitation code.
    *
-   * @param {{phone:string, usedInviteCode:string}} opts
+   * IMPORTANT: Your signup page has country-code select + phone input.
+   * If the caller doesn't pass `opts.phone`, we auto-read from the page.
+   *
+   * @param {{phone?:string, usedInviteCode?:string, prefix?:string, digits?:string}} opts
    * @returns {Promise<{id:string, phone:string, inviteCode:string, publicId:number, createdAt:string}>}
    */
   async function registerWithInvite(opts) {
-    var phone = opts && opts.phone ? String(opts.phone).trim() : '';
-    var usedInviteCode = opts && opts.usedInviteCode ? String(opts.usedInviteCode).trim() : null;
+    opts = opts || {};
+    var usedInviteCode =
+      (opts.usedInviteCode != null ? String(opts.usedInviteCode) : String(readInviteFromPage() || '')).trim() || null;
+
+    var phone = (opts.phone != null ? String(opts.phone) : '').trim();
+    if (!phone) {
+      // Try from prefix+digits
+      var p = opts.prefix != null ? String(opts.prefix) : null;
+      var d = opts.digits != null ? String(opts.digits) : null;
+      if (p != null || d != null) phone = fullPhone(p || '', d || '');
+      if (!phone) phone = readPhoneFromPage().full;
+    }
+
     if (!phone) throw new Error('Phone is required');
 
-    // Prepare payload; omit used_invite_code if blank so that the
-    // database triggers can handle the root user case gracefully.
+    // Prepare payload; omit used_invite_code if blank so that the DB trigger can
+    // handle the "first user" bootstrap case.
     var payload = { phone: phone };
     if (usedInviteCode) payload.used_invite_code = usedInviteCode;
 
     var res = await fetch(SB.url + '/rest/v1/users', {
       method: 'POST',
-      headers: Object.assign({}, SB.headers(), { 'Prefer': 'return=representation' }),
+      headers: Object.assign({}, SB.headers(), { Prefer: 'return=representation' }),
       body: JSON.stringify(payload)
     });
+
     if (!res.ok) {
-      var errText;
-      try { errText = await res.text(); } catch (_) {}
+      var errText = '';
+      try {
+        errText = await res.text();
+      } catch (e) {}
+      // Make the message cleaner for toast/alert
       throw new Error(errText || 'Failed to register');
     }
+
     var data = await res.json();
     if (!Array.isArray(data) || !data.length) throw new Error('Unexpected signup response');
     var user = data[0];
+
     try {
       localStorage.setItem('currentUserId', user.id);
       localStorage.setItem('currentPhone', user.phone);
-    } catch (e) {
-      // ignore storage errors
-    }
+    
+      // Compatibility key for older pages
+      localStorage.setItem('sb_user_id_v1', user.id);
+} catch (e) {}
+
     return {
       id: user.id,
       phone: user.phone,
@@ -100,72 +209,76 @@
   }
 
   /**
-   * Log an existing user in by phone number. The password is compared
-   * against the value stored locally under `pw:{userId}`. If no
-   * stored password exists (e.g. first login after registration), the
-   * typed password becomes the stored password for that user. On
-   * success the user is considered logged in and their ID/phone are
-   * saved in localStorage.
+   * Log in an existing user by phone number ONLY.
+   * (No passwords; your database schema doesn't store passwords.)
    *
-   * @param {{phone:string}} opts
+   * @param {{phone?:string, prefix?:string, digits?:string}} opts
    * @returns {Promise<{id:string, phone:string}>}
    */
   async function loginWithPhone(opts) {
-    var phone = opts && opts.phone ? String(opts.phone).trim() : '';
+    opts = opts || {};
+    var phone = (opts.phone != null ? String(opts.phone) : '').trim();
+    if (!phone) {
+      var p = opts.prefix != null ? String(opts.prefix) : null;
+      var d = opts.digits != null ? String(opts.digits) : null;
+      if (p != null || d != null) phone = fullPhone(p || '', d || '');
+      if (!phone) phone = readPhoneFromPage().full;
+    }
     if (!phone) throw new Error('Phone is required');
+
     var user = await fetchUserByPhone(phone);
     if (!user) throw new Error('Account not found');
-    // Read password from the password field on the page. This avoids
-    // passing the password through the function call.
-    var pwdInput = document.querySelector('.password-wrapper input');
-    var typed = pwdInput ? String(pwdInput.value || '') : '';
-    if (!typed) throw new Error('Password required');
-    var storageKey = 'pw:' + user.id;
-    var stored = '';
-    try { stored = localStorage.getItem(storageKey) || ''; } catch (_) {}
-    if (stored && stored !== typed) {
-      throw new Error('Incorrect password');
-    }
-    // Persist typed password if none exists
+
     try {
-      if (!stored) localStorage.setItem(storageKey, typed);
       localStorage.setItem('currentUserId', user.id);
       localStorage.setItem('currentPhone', user.phone);
-    } catch (e) {}
+    
+      // Compatibility key for older pages
+      localStorage.setItem('sb_user_id_v1', user.id);
+} catch (e) {}
+
     return { id: user.id, phone: user.phone };
   }
 
-  /**
-   * Return the currently logged-in user's ID from localStorage. If
-   * nothing is stored returns null. This returns a promise for
-   * compatibility with async usage in other scripts.
-   *
-   * @returns {Promise<string|null>}
-   */
   async function ensureSupabaseUserId() {
     var id = null;
-    try { id = localStorage.getItem('currentUserId') || null; } catch (e) {}
+    try {
+      id = localStorage.getItem('currentUserId') || localStorage.getItem('sb_user_id_v1') || null;
+    } catch (e) {}
     return id;
   }
 
-  /**
-   * Clear the current login session. This removes the stored user ID
-   * and phone number from localStorage. Password entries remain
-   * untouched to allow the user to log in again without retyping.
-   */
   function logout() {
     try {
       localStorage.removeItem('currentUserId');
       localStorage.removeItem('currentPhone');
-    } catch (e) {}
+    
+      localStorage.removeItem('sb_user_id_v1');
+} catch (e) {}
   }
 
-  // Expose ExaAuth
+  // Convenience: ensure we can restore a full profile when needed
+  async function getCurrentUserProfile() {
+    var id = await ensureSupabaseUserId();
+    if (!id) return null;
+    var row = await fetchUserById(id);
+    if (!row) return null;
+    return {
+      id: row.id,
+      phone: row.phone,
+      inviteCode: row.invite_code,
+      publicId: row.public_id,
+      createdAt: row.created_at
+    };
+  }
+
   window.ExaAuth = {
     fullPhone: fullPhone,
+    readPhoneFromPage: readPhoneFromPage,
     registerWithInvite: registerWithInvite,
     loginWithPhone: loginWithPhone,
     ensureSupabaseUserId: ensureSupabaseUserId,
+    getCurrentUserProfile: getCurrentUserProfile,
     logout: logout
   };
 })();
