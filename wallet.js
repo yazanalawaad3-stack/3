@@ -1,11 +1,12 @@
-// Wallet + earnings + withdrawals module (Supabase RPC-first)
+
+// wallet.js (DB-driven)
+// Uses Supabase RPC functions from your SQL system:
+// - get_assets_summary(p_user uuid)
+// - perform_ipower_action(p_user uuid)
+// - request_withdrawal(p_user, p_currency, p_network, p_amount, p_address)
 //
-// IMPORTANT:
-// - Do NOT keep a local balance cache. Balance/earnings are server-truth.
-// - Use SQL RPC functions/views provided by your migration pack.
-// - This module exposes a global `DemoWallet` object for pages.
-//
-// Requires: sb-config.js, auth.js
+// This file intentionally avoids "local balance caching" logic that can conflict
+// with triggers/commissions on the database.
 
 ;(function () {
   'use strict';
@@ -16,207 +17,116 @@
     return;
   }
 
-  function _uid() {
-    try { return localStorage.getItem('currentUserId') || null; } catch (_) { return null; }
+  function getUserId() {
+    try { return localStorage.getItem('currentUserId') || null; } catch (e) { return null; }
   }
 
-  async function _rpc(fnName, bodyObj) {
-    var res = await fetch(SB.url + '/rest/v1/rpc/' + encodeURIComponent(fnName), {
+  async function rpc(fn, bodyObj) {
+    var url = SB.url + '/rest/v1/rpc/' + encodeURIComponent(fn);
+    var res = await fetch(url, {
       method: 'POST',
       headers: SB.headers(),
       body: JSON.stringify(bodyObj || {})
     });
+    var txt = '';
     if (!res.ok) {
-      var t = '';
-      try { t = await res.text(); } catch (_) {}
-      throw new Error(t || ('RPC failed: ' + fnName));
+      try { txt = await res.text(); } catch (_) {}
+      // Try to surface PostgREST error JSON if present
+      var msg = txt;
+      try {
+        var j = JSON.parse(txt);
+        msg = j.message || j.details || j.hint || txt;
+      } catch (_) {}
+      throw new Error(msg || ('RPC ' + fn + ' failed'));
     }
+    // RPC may return json array or object
     return await res.json();
   }
 
-  async function _getOne(table, select, filterKey, filterVal) {
-    var url = SB.url + '/rest/v1/' + table
-      + '?select=' + encodeURIComponent(select)
-      + '&' + encodeURIComponent(filterKey) + '=eq.' + encodeURIComponent(filterVal)
-      + '&limit=1';
-    var res = await fetch(url, { method: 'GET', headers: SB.headers() });
-    if (!res.ok) return null;
-    var rows = await res.json();
-    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  function num(v) {
+    var n = typeof v === 'number' ? v : parseFloat(v);
+    return isNaN(n) ? 0 : n;
   }
 
-  // ---------------------------------------------------------------------------
-  // Assets / income summary (used by dashboard)
-  // ---------------------------------------------------------------------------
+  function fmtUSDT(v) {
+    return num(v).toFixed(2) + ' USDT';
+  }
 
+  // -----------------------------
+  // Public API
+  // -----------------------------
+
+  /**
+   * Returns the asset summary for the logged-in user.
+   * { usdt_balance, total_personal, today_personal, total_team, today_team }
+   */
   async function getAssetsSummary() {
-    var userId = _uid();
+    var userId = getUserId();
     if (!userId) throw new Error('Not logged in');
-    // returns a single row object
-    var rows = await _rpc('get_assets_summary', { p_user: userId });
-    // PostgREST returns array for set-returning functions
-    var row = Array.isArray(rows) && rows.length ? rows[0] : null;
-    if (!row) {
-      return {
-        usdt_balance: 0,
-        total_personal: 0,
-        today_personal: 0,
-        total_team: 0,
-        today_team: 0
-      };
-    }
-    return row;
-  }
-
-  async function getAssetsDashboard() {
-    var userId = _uid();
-    if (!userId) throw new Error('Not logged in');
-    var rows = await _rpc('get_assets_dashboard', { p_user: userId });
-    var row = Array.isArray(rows) && rows.length ? rows[0] : null;
-    if (!row) {
-      return {
-        total_assets: 0,
-        personal_total: 0,
-        personal_24h: 0,
-        team_total: 0,
-        team_24h: 0
-      };
-    }
-    return row;
-  }
-
-  // ---------------------------------------------------------------------------
-  // AI Power action
-  // ---------------------------------------------------------------------------
-
-  async function performIpowerAction() {
-    var userId = _uid();
-    if (!userId) throw new Error('Not logged in');
-    // returns table(action_id, out_user_id, earning_amount, new_balance, out_created_at)
-    var rows = await _rpc('perform_ipower_action', { p_user: userId });
-    return Array.isArray(rows) && rows.length ? rows[0] : null;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Team
-  // ---------------------------------------------------------------------------
-
-  async function getMyTeam() {
-    var userId = _uid();
-    if (!userId) throw new Error('Not logged in');
-    // returns rows (depth, public_id, phone, created_at, usdt_balance, is_funded, is_activated)
-    var rows = await _rpc('get_my_team', { p_ancestor: userId });
-    return Array.isArray(rows) ? rows : [];
-  }
-
-  // ---------------------------------------------------------------------------
-  // VIP / state
-  // ---------------------------------------------------------------------------
-
-  async function getVipInfo() {
-    var userId = _uid();
-    if (!userId) {
-      return { currentLevel: 'V0', isActivated: false, isFunded: false, isLocked: false, lockedReason: null };
-    }
-    var state = await _getOne('user_state', 'current_level,is_activated,is_funded,is_locked,locked_reason', 'user_id', userId);
-    state = state || {};
+    var rows = await rpc('get_assets_summary', { p_user: userId });
+    // SQL returns a rowset; PostgREST gives an array
+    var row = Array.isArray(rows) && rows[0] ? rows[0] : (rows || {});
     return {
-      currentLevel: state.current_level || 'V0',
-      isActivated: !!state.is_activated,
-      isFunded: !!state.is_funded,
-      isLocked: !!state.is_locked,
-      lockedReason: state.locked_reason || null
+      usdt_balance: num(row.usdt_balance),
+      total_personal: num(row.total_personal),
+      today_personal: num(row.today_personal),
+      total_team: num(row.total_team),
+      today_team: num(row.today_team)
     };
   }
 
-  // ---------------------------------------------------------------------------
-  // Payout addresses
-  // ---------------------------------------------------------------------------
-
-  async function listPayoutAddresses() {
-    var userId = _uid();
+  /**
+   * Performs the AI Power action (once per 24h). DB will:
+   * - insert ipower_actions
+   * - update wallet_balances
+   * - distribute referral commissions
+   * Returns { action_id, earning_amount, new_balance, out_created_at }
+   */
+  async function runAiPower() {
+    var userId = getUserId();
     if (!userId) throw new Error('Not logged in');
-    var url = SB.url + '/rest/v1/user_payout_addresses'
-      + '?select=currency,network,address,is_locked,locked_at,updated_at'
-      + '&user_id=eq.' + encodeURIComponent(userId);
-    var res = await fetch(url, { method: 'GET', headers: SB.headers() });
-    if (!res.ok) return [];
-    var rows = await res.json();
-    return Array.isArray(rows) ? rows : [];
+    var rows = await rpc('perform_ipower_action', { p_user: userId });
+    var row = Array.isArray(rows) && rows[0] ? rows[0] : (rows || {});
+    return {
+      action_id: row.action_id,
+      earning_amount: num(row.earning_amount),
+      new_balance: num(row.new_balance),
+      out_created_at: row.out_created_at
+    };
   }
 
-  async function addPayoutAddress(currency, network, address) {
-    var userId = _uid();
+  /**
+   * Submit withdrawal request using the DB rules.
+   */
+  async function requestWithdraw(currency, network, amount, address) {
+    var userId = getUserId();
     if (!userId) throw new Error('Not logged in');
     var payload = {
-      user_id: userId,
-      currency: String(currency || '').toLowerCase(),
-      network: String(network || '').toLowerCase(),
-      address: String(address || '')
-    };
-    var res = await fetch(SB.url + '/rest/v1/user_payout_addresses', {
-      method: 'POST',
-      headers: Object.assign({}, SB.headers(), { 'Prefer': 'return=representation' }),
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) {
-      var msg = '';
-      try { msg = await res.text(); } catch (_) {}
-      throw new Error(msg || 'Failed to add address');
-    }
-    var data = await res.json();
-    return Array.isArray(data) && data.length ? data[0] : null;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Withdrawals (MUST use RPC request_withdrawal to enforce rules)
-  // ---------------------------------------------------------------------------
-
-  async function requestWithdrawal(opts) {
-    var userId = _uid();
-    if (!userId) throw new Error('Not logged in');
-    opts = opts || {};
-    var amount = Number(opts.amount);
-    if (!isFinite(amount) || amount <= 0) throw new Error('Invalid amount');
-
-    var currency = String(opts.currency || '').toLowerCase();
-    var network = String(opts.network || '').toLowerCase();
-    var address = String(opts.address || '').trim();
-
-    // Returns uuid (request id)
-    var reqId = await _rpc('request_withdrawal', {
       p_user: userId,
-      p_amount: amount,
-      p_currency: currency,
-      p_network: network,
-      p_address: address
-    });
-
-    // PostgREST returns scalar directly for scalar functions.
-    return reqId;
+      p_currency: String(currency || 'usdt').toLowerCase(),
+      p_network: String(network || 'trc20').toLowerCase(),
+      p_amount: num(amount),
+      p_address: String(address || '')
+    };
+    var rows = await rpc('request_withdrawal', payload);
+    var row = Array.isArray(rows) && rows[0] ? rows[0] : (rows || {});
+    return row;
   }
 
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
+  function getUser() {
+    var uid = null, phone = null;
+    try {
+      uid = localStorage.getItem('currentUserId') || null;
+      phone = localStorage.getItem('currentPhone') || null;
+    } catch (e) {}
+    return { id: uid, phone: phone };
+  }
 
   window.DemoWallet = {
-    // Assets & income (dashboard)
+    getUser: getUser,
     getAssetsSummary: getAssetsSummary,
-    getAssetsDashboard: getAssetsDashboard,
-
-    // AI Power
-    performIpowerAction: performIpowerAction,
-
-    // Team / state
-    getMyTeam: getMyTeam,
-    getVipInfo: getVipInfo,
-
-    // Payout addresses
-    listPayoutAddresses: listPayoutAddresses,
-    addPayoutAddress: addPayoutAddress,
-
-    // Withdrawals
-    requestWithdrawal: requestWithdrawal
+    runAiPower: runAiPower,
+    requestWithdraw: requestWithdraw,
+    fmtUSDT: fmtUSDT
   };
 })();

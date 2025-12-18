@@ -1,101 +1,66 @@
-// sb-balance.js
-// Updates balances + income widgets on my-assets.html using Supabase RPCs.
-// Calls public.get_assets_summary(p_user uuid) and updates the UI.
-//
-// Targets in my-assets.html:
-// - .assets-usdt-balance (Total Account Assets line)
-// - .assets-usd-approx (donut center)
-// - .assets-total-personal / .assets-today-personal
-// - .assets-total-team / .assets-today-team
-// - .currency-amount[data-asset="USDT"]
+
+// sb-balance.js (Asset Center updater)
+// Reads DB summary using DemoWallet.getAssetsSummary() and updates:
+// - .assets-usdt-balance
+// - .assets-usd-approx (inside donut)
+// - .assets-total-personal
+// - .assets-today-personal
+// - .assets-total-team
+// - .assets-today-team
+// - Currency list USDT amount: .currency-amount[data-asset="USDT"]
 
 ;(function () {
   'use strict';
 
-  function fmt2(n) {
-    var x = Number(n);
-    if (!isFinite(x)) x = 0;
-    return x.toFixed(2);
+  function setText(sel, text) {
+    var el = document.querySelector(sel);
+    if (el) el.textContent = text;
   }
 
-  function setText(el, text) {
-    if (!el) return;
-    el.textContent = text;
+  function setAllText(selector, text) {
+    document.querySelectorAll(selector).forEach(function (el) { el.textContent = text; });
   }
 
-  function q(sel) { return document.querySelector(sel); }
-  function qAll(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
+  function num(v) {
+    var n = typeof v === 'number' ? v : parseFloat(v);
+    return isNaN(n) ? 0 : n;
+  }
 
-  async function getUserId() {
-    try {
-      if (window.ExaAuth && typeof window.ExaAuth.ensureSupabaseUserId === 'function') {
-        var uid = await window.ExaAuth.ensureSupabaseUserId();
-        if (uid) return uid;
-      }
-    } catch (e) {}
+  async function update() {
+    if (!window.DemoWallet || !window.ExaAuth) return;
+    var userId = await window.ExaAuth.ensureSupabaseUserId();
+    if (!userId) return;
 
     try {
-      return localStorage.getItem('currentUserId') ||
-             localStorage.getItem('sb_user_id') ||
-             null;
-    } catch (e) {}
-    return null;
-  }
+      var s = await window.DemoWallet.getAssetsSummary();
 
-  async function rpcGetAssetsSummary(userId) {
-    if (!window.SB_CONFIG || !SB_CONFIG.url) throw new Error('SB_CONFIG missing');
-    var url = SB_CONFIG.url + '/rest/v1/rpc/get_assets_summary';
-    var res = await fetch(url, {
-      method: 'POST',
-      headers: SB_CONFIG.headers(),
-      body: JSON.stringify({ p_user: userId })
-    });
+      // Main balance display
+      var bal = num(s.usdt_balance);
+      setAllText('.assets-usdt-balance', bal.toFixed(2) + ' USDT');
 
-    if (!res.ok) {
-      var t = '';
-      try { t = await res.text(); } catch (e) {}
-      throw new Error('RPC get_assets_summary failed: ' + res.status + ' ' + t);
+      // Donut center value (approx) — match balance (your design uses "$")
+      setText('.assets-usd-approx', bal.toFixed(2));
+
+      // Income stats
+      setAllText('.assets-total-personal', num(s.total_personal).toFixed(2) + ' USDT');
+      setAllText('.assets-today-personal', num(s.today_personal).toFixed(2) + ' USDT');
+      setAllText('.assets-total-team', num(s.total_team).toFixed(2) + ' USDT');
+      setAllText('.assets-today-team', num(s.today_team).toFixed(2) + ' USDT');
+
+      // Currency list USDT amount row
+      document.querySelectorAll('.currency-amount[data-asset="USDT"]').forEach(function (el) {
+        el.textContent = bal.toFixed(2);
+      });
+    } catch (e) {
+      // If something fails, show nothing (but log for debugging)
+      console.error('[sb-balance] update failed:', e && e.message ? e.message : e);
     }
-
-    var data = await res.json();
-    if (Array.isArray(data)) return data[0] || {};
-    return data || {};
-  }
-
-  function applyToUI(summary) {
-    var usdt = fmt2(summary.usdt_balance);
-    var totalPersonal = fmt2(summary.total_personal);
-    var todayPersonal = fmt2(summary.today_personal);
-    var totalTeam = fmt2(summary.total_team);
-    var todayTeam = fmt2(summary.today_team);
-
-    setText(q('.assets-usdt-balance'), usdt + ' USDT');
-
-    // User requested: donut center shows the same number as the total (203)
-    setText(q('.assets-usd-approx'), usdt);
-
-    setText(q('.assets-total-personal'), totalPersonal + ' USDT');
-    setText(q('.assets-today-personal'), todayPersonal + ' USDT');
-    setText(q('.assets-total-team'), totalTeam + ' USDT');
-    setText(q('.assets-today-team'), todayTeam + ' USDT');
-
-    qAll('.currency-amount[data-asset="USDT"]').forEach(function (el) {
-      setText(el, usdt);
-    });
-  }
-
-  async function refresh() {
-    var uid = await getUserId();
-    if (!uid) return;
-    var summary = await rpcGetAssetsSummary(uid);
-    applyToUI(summary || {});
   }
 
   function start() {
-    refresh().catch(function () {});
-    setInterval(function () {
-      refresh().catch(function () {});
-    }, 10000);
+    update();
+    // Optional periodic refresh
+    setInterval(update, 15000);
   }
 
   if (document.readyState === 'loading') {
