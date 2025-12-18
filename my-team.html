@@ -573,8 +573,174 @@
   <!-- Wallet helpers -->
   <script src="wallet.js"></script>
 
-  <!-- Team data (funded vs not) -->
-  <script src="my-team-helper.js"></script>
+  <script>
+    (function () {
+                  function getSB(){ return window.SB_CONFIG; }
+      function apiHeaders() { var SB = getSB(); return SB && typeof SB.headers==='function' ? SB.headers() : {}; }
+      function apiBase() { var SB = getSB(); return SB ? String(SB.url||'').replace(/\/$/, '') : ''; }
+
+      function fmtDate(ts) {
+        if (!ts) return "-";
+        try {
+          var d = new Date(ts);
+          if (isNaN(d.getTime())) return "-";
+          var yyyy = d.getFullYear();
+          var mm = String(d.getMonth() + 1).padStart(2, '0');
+          var dd = String(d.getDate()).padStart(2, '0');
+          var hh = String(d.getHours()).padStart(2, '0');
+          var mi = String(d.getMinutes()).padStart(2, '0');
+          var ss = String(d.getSeconds()).padStart(2, '0');
+          return yyyy + '-' + mm + '-' + dd + ' ' + hh + ':' + mi + ':' + ss;
+        } catch (e) { return "-"; }
+      }
+
+      function maskPhone(p) {
+        if (!p) return "-";
+        var s = String(p).trim();
+        if (s.length <= 6) return s;
+        return s.slice(0, 3) + "****" + s.slice(-3);
+      }
+
+      function inFilter(ids) {
+        return "in.(" + ids.map(function (id) { return String(id).trim(); }).join(",") + ")";
+      }
+
+      async function fetchUsersByInviterIds(inviterIds) {
+        if (!inviterIds || !inviterIds.length) return [];
+        var url = apiBase() + "/rest/v1/users"
+          + "?select=id,phone,created_at,inviter_id"
+          + "&inviter_id=" + inFilter(inviterIds)
+          + "&order=created_at.desc"
+          + "&limit=1000";
+        var res = await fetch(url, { method: "GET", headers: apiHeaders() });
+        if (!res.ok) return [];
+        var rows = await res.json();
+        return Array.isArray(rows) ? rows : [];
+      }
+
+      
+
+      async function fetchFundedMap(userIds) {
+        if (!userIds || !userIds.length) return {};
+        // chunk to avoid URL length issues
+        var map = {};
+        var chunkSize = 80;
+        for (var i = 0; i < userIds.length; i += chunkSize) {
+          var chunk = userIds.slice(i, i + chunkSize);
+          var url = apiBase() + "/rest/v1/user_state"
+            + "?select=user_id,is_funded"
+            + "&user_id=in.(" + chunk.map(function (id) { return String(id).trim(); }).join(",") + ")"
+            + "&limit=1000";
+          var res = await fetch(url, { method: "GET", headers: apiHeaders() });
+          if (!res.ok) continue;
+          var rows = await res.json();
+          if (Array.isArray(rows)) {
+            rows.forEach(function (r) { map[r.user_id] = !!r.is_funded; });
+          }
+        }
+        return map;
+      }
+
+      function setText(el, text) {
+        if (!el) return;
+        el.textContent = text;
+      }
+
+      function renderSummary(effectiveAll, totalAll) {
+        var summaryValues = document.querySelectorAll('.summary-box .summary-value');
+        if (summaryValues.length >= 1) {
+          setText(summaryValues[0], effectiveAll + "/" + totalAll);
+        }
+      }
+
+      function renderGen(cardIdx, effectiveCount, totalCount, percent) {
+        var cards = document.querySelectorAll('.generation-card');
+        var card = cards && cards[cardIdx] ? cards[cardIdx] : null;
+        if (!card) return;
+        var row = card.querySelector('.generation-values');
+        if (!row) return;
+        var spans = row.querySelectorAll('span');
+        if (spans.length < 3) return;
+        spans[0].textContent = effectiveCount + "/" + totalCount;
+        spans[1].textContent = String(percent) + "%";
+        spans[2].textContent = spans[2].textContent || "0/0";
+      }
+
+      function renderGen1Table(gen1) {
+        var tbody = document.querySelector('.team-table tbody');
+        if (!tbody) return;
+        while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+        if (!gen1 || !gen1.length) {
+          var tr = document.createElement('tr');
+          ['-','-','-','-'].forEach(function (t) {
+            var td = document.createElement('td'); td.textContent = t; tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+          return;
+        }
+
+        gen1.forEach(function (u) {
+          var tr = document.createElement('tr');
+          var shortId = (u.id || '').slice(0, 8) || '-';
+          var cells = [maskPhone(u.phone), shortId, 'LV.1', fmtDate(u.created_at)];
+          cells.forEach(function (t) {
+            var td = document.createElement('td'); td.textContent = t; tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+      }
+
+      async function loadTeam() {
+        try {
+          // Wait briefly for sb-config.js to load
+          var tries = 0;
+          while (!window.SB_CONFIG && tries < 40) { await new Promise(function(r){ setTimeout(r, 25); }); tries++; }
+
+          if (!window.SBUser || typeof window.SBUser.getCurrentProfile !== "function") return;
+          var profile = await window.SBUser.getCurrentProfile();
+          if (!profile || !profile.id) return;
+
+          var myId = profile.id;
+
+          var gen1 = await fetchUsersByInviterIds([myId]);
+          var gen1Ids = gen1.map(function (u) { return u.id; }).filter(Boolean);
+
+          var gen2 = gen1Ids.length ? await fetchUsersByInviterIds(gen1Ids) : [];
+          var gen2Ids = gen2.map(function (u) { return u.id; }).filter(Boolean);
+
+          var gen3 = gen2Ids.length ? await fetchUsersByInviterIds(gen2Ids) : [];
+
+          var totalAll = gen1.length + gen2.length + gen3.length;
+
+           var allIds = gen1Ids.concat(gen2Ids).concat(gen3.map(function(u){return u.id;}).filter(Boolean));
+           var fundedMap = await fetchFundedMap(allIds);
+
+           function countFunded(list){
+             return (list || []).filter(function(u){ return u && u.id && fundedMap[u.id]; }).length;
+           }
+           var eff1 = countFunded(gen1);
+           var eff2 = countFunded(gen2);
+           var eff3 = countFunded(gen3);
+           var effAll = eff1 + eff2 + eff3;
+
+           renderSummary(effAll, totalAll);
+           renderGen(0, eff1, gen1.length, 20);
+           renderGen(1, eff2, gen2.length, 5);
+           renderGen(2, eff3, gen3.length, 3);
+          renderGen1Table(gen1);
+        } catch (e) {
+          try { console.error(e); } catch (_) {}
+        }
+      }
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", loadTeam);
+      } else {
+        loadTeam();
+      }
+    })();
+  </script>
 
 </body>
 </html>

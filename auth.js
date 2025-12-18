@@ -102,14 +102,6 @@
   }
 
   function readInviteFromPage() {
-    // 1) Prefer URL param (?code=XXXX or ?invite=XXXX or ?ref=XXXX)
-    try {
-      var qs = new URLSearchParams(window.location.search || '');
-      var p = (qs.get('code') || qs.get('invite') || qs.get('ref') || '').trim();
-      if (p) return p;
-    } catch (e) {}
-
-    // 2) Then look for an input on the page
     var el = firstMatch([
       'input[name*="invite"]',
       'input[id*="invite"]',
@@ -119,6 +111,12 @@
     return el ? String(el.value || '').trim() : '';
   }
 
+  function readInviteFromUrl() {
+    try {
+      var q = new URLSearchParams(window.location.search || '');
+      return String(q.get('invite') || q.get('code') || q.get('inviter') || q.get('inv') || '').trim();
+    } catch (e) { return ''; }
+  }
 
   async function fetchUserByPhone(phone) {
     if (!phone) return null;
@@ -163,7 +161,7 @@
   async function registerWithInvite(opts) {
     opts = opts || {};
     var usedInviteCode =
-      (opts.usedInviteCode != null ? String(opts.usedInviteCode) : String(readInviteFromPage() || '')).trim() || null;
+      (opts.usedInviteCode != null ? String(opts.usedInviteCode) : String(readInviteFromPage() || readInviteFromUrl() || '')).trim() || null;
 
     var phone = (opts.phone != null ? String(opts.phone) : '').trim();
     if (!phone) {
@@ -203,7 +201,10 @@
     try {
       localStorage.setItem('currentUserId', user.id);
       localStorage.setItem('currentPhone', user.phone);
-    } catch (e) {}
+    
+      // Compatibility key for older pages
+      localStorage.setItem('sb_user_id_v1', user.id);
+} catch (e) {}
 
     return {
       id: user.id,
@@ -238,7 +239,10 @@
     try {
       localStorage.setItem('currentUserId', user.id);
       localStorage.setItem('currentPhone', user.phone);
-    } catch (e) {}
+    
+      // Compatibility key for older pages
+      localStorage.setItem('sb_user_id_v1', user.id);
+} catch (e) {}
 
     return { id: user.id, phone: user.phone };
   }
@@ -246,7 +250,7 @@
   async function ensureSupabaseUserId() {
     var id = null;
     try {
-      id = localStorage.getItem('currentUserId') || null;
+      id = localStorage.getItem('currentUserId') || localStorage.getItem('sb_user_id_v1') || null;
     } catch (e) {}
     return id;
   }
@@ -255,7 +259,9 @@
     try {
       localStorage.removeItem('currentUserId');
       localStorage.removeItem('currentPhone');
-    } catch (e) {}
+    
+      localStorage.removeItem('sb_user_id_v1');
+} catch (e) {}
   }
 
   // Convenience: ensure we can restore a full profile when needed
@@ -282,28 +288,4 @@
     getCurrentUserProfile: getCurrentUserProfile,
     logout: logout
   };
-// Autofill invitation code from URL into the signup form (no style changes)
-function autofillInviteFromUrl() {
-  try {
-    var page = (window.location.pathname.split('/').pop() || '').toLowerCase();
-    if (page !== 'signup.html') return;
-    var qs = new URLSearchParams(window.location.search || '');
-    var code = (qs.get('code') || qs.get('invite') || qs.get('ref') || '').trim();
-    if (!code) return;
-    var el = firstMatch([
-      'input[name*="invite"]',
-      'input[id*="invite"]',
-      'input[placeholder*="Invite"]',
-      'input[placeholder*="Invitation"]'
-    ]);
-    if (el && !String(el.value || '').trim()) el.value = code;
-  } catch (e) {}
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', autofillInviteFromUrl);
-} else {
-  autofillInviteFromUrl();
-}
-
 })();
