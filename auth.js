@@ -194,7 +194,10 @@
     try {
       localStorage.setItem('currentUserId', user.id);
       localStorage.setItem('currentPhone', user.phone);
-    } catch (e) {}
+    
+      // Compatibility key for older pages
+      localStorage.setItem('sb_user_id_v1', user.id);
+} catch (e) {}
 
     return {
       id: user.id,
@@ -229,7 +232,10 @@
     try {
       localStorage.setItem('currentUserId', user.id);
       localStorage.setItem('currentPhone', user.phone);
-    } catch (e) {}
+    
+      // Compatibility key for older pages
+      localStorage.setItem('sb_user_id_v1', user.id);
+} catch (e) {}
 
     return { id: user.id, phone: user.phone };
   }
@@ -237,7 +243,7 @@
   async function ensureSupabaseUserId() {
     var id = null;
     try {
-      id = localStorage.getItem('currentUserId') || null;
+      id = localStorage.getItem('currentUserId') || localStorage.getItem('sb_user_id_v1') || null;
     } catch (e) {}
     return id;
   }
@@ -246,7 +252,9 @@
     try {
       localStorage.removeItem('currentUserId');
       localStorage.removeItem('currentPhone');
-    } catch (e) {}
+    
+      localStorage.removeItem('sb_user_id_v1');
+} catch (e) {}
   }
 
   // Convenience: ensure we can restore a full profile when needed
