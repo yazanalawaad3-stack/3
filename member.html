@@ -952,14 +952,63 @@
 <script src="common-nav.js"></script>
 <script>
   (function () {
-    function applyVipInfo() {
+    async function applyVipInfo() {
       if (!window.DemoWallet || !window.DemoWallet.getVipInfo) return;
-      var info = window.DemoWallet.getVipInfo();
+      var info = await window.DemoWallet.getVipInfo();
 
       var pillSpan = document.querySelector(".current-level-pill span");
       if (pillSpan && info.currentLevel) {
         pillSpan.textContent = "Current Member Level:" + info.currentLevel;
       }
+
+      var nextLevelEl = document.querySelector(".next-level");
+      if (nextLevelEl) {
+        nextLevelEl.textContent = info.nextLevel ? ("Next Level:" + info.nextLevel) : "Max Level";
+      }
+
+      var sections = document.querySelectorAll(".vip-section");
+      var balance = typeof info.balance === "number" ? info.balance : 0;
+
+      // effectiveUsers in your SQL = direct funded users (deposit >= 100) at depth 1
+      var effectiveUsers = (typeof info.effectiveUsers === "number") ? info.effectiveUsers : 0;
+
+      sections.forEach(function (sec) {
+        var title = sec.querySelector(".vip-title");
+        if (!title) return;
+        var levelMatch = (title.textContent || "").match(/V\d+/);
+        if (!levelMatch) return;
+        var lvl = levelMatch[0];
+        var rules = info.rulesByLevel && info.rulesByLevel[lvl] ? info.rulesByLevel[lvl] : null;
+
+        var balNeedEl = sec.querySelector(".requirement-balance");
+        var userNeedEl = sec.querySelector(".requirement-users");
+        if (rules) {
+          if (balNeedEl) balNeedEl.textContent = String(rules.minBalance || 0);
+          if (userNeedEl) userNeedEl.textContent = String(rules.minUsers || 0);
+        }
+
+        var balProg = sec.querySelector(".progress-bar.balance .progress-fill");
+        var userProg = sec.querySelector(".progress-bar.users .progress-fill");
+        if (balProg && rules) {
+          var pct = rules.minBalance ? Math.min(100, (balance / rules.minBalance) * 100) : 0;
+          balProg.style.width = pct.toFixed(0) + "%";
+        }
+        if (userProg && rules) {
+          var pct2 = rules.minUsers ? Math.min(100, (effectiveUsers / rules.minUsers) * 100) : 0;
+          userProg.style.width = pct2.toFixed(0) + "%";
+        }
+      });
+
+      var lockEl = document.querySelector(".lock-reason");
+      if (lockEl) {
+        if (info.isLocked && info.lockedReason) {
+          lockEl.style.display = "";
+          lockEl.textContent = info.lockedReason;
+        } else {
+          lockEl.style.display = "none";
+        }
+      }
+    }
 
       var nextLevelEl = document.querySelector(".next-level");
       if (nextLevelEl) {

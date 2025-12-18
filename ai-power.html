@@ -828,245 +828,444 @@
 
 <!-- Load Supabase configuration -->
 <script src="sb-config.js"></script>
-<!-- Authentication helpers -->
-<script src="auth.js"></script>
 <!-- Wallet helpers -->
 <script src="wallet.js"></script>
-
 <script>
-;(function () {
-  "use strict";
-
-  var SB = window.SB_CONFIG;
-  if (!SB) {
-    console.error("SB_CONFIG missing (sb-config.js not loaded)");
-    return;
-  }
-
-  function rpc(name, body) {
-    return fetch(SB.url + "/rest/v1/rpc/" + name, {
-      method: "POST",
-      headers: SB.headers(),
-      body: JSON.stringify(body || {})
-    }).then(async function (res) {
-      var txt = await res.text();
-      if (!res.ok) {
-        // Supabase often returns plain text or JSON error
-        try {
-          var j = JSON.parse(txt);
-          throw new Error(j.message || j.error || txt || ("RPC " + name + " failed"));
-        } catch (e) {
-          throw new Error(txt || ("RPC " + name + " failed"));
-        }
-      }
-      try { return JSON.parse(txt); } catch (e) { return txt; }
-    });
-  }
-
-  function getUserId() {
-    if (!window.ExaAuth || typeof window.ExaAuth.ensureSupabaseUserId !== "function") {
-      return Promise.resolve("");
+  
+  (function() {
+    // --- Shared user info from demo storage ---
+    function getDemoUserInfo() {
+      var balance = parseFloat(localStorage.getItem("demoBalance") || "0");
+      var effectiveUsers = parseInt(localStorage.getItem("demoEffectiveUsers") || "0", 10);
+      if (isNaN(balance)) balance = 0;
+      if (isNaN(effectiveUsers)) effectiveUsers = 0;
+      return { balance: balance, effectiveUsers: effectiveUsers };
     }
-    return window.ExaAuth.ensureSupabaseUserId().then(function (uid) { return uid || ""; });
-  }
 
-  function levelRank(lvl) {
-    var map = { V0:0, V1:1, V2:2, V3:3, V4:4, V5:5, V6:6 };
-    return map[(lvl || "").toUpperCase()] ?? 0;
-  }
+    // --- Membership rules (same logic as Member page) ---
+    var levelRules = {
+      V1: { minBalance: 50,   minUsers: 0  },
+      V2: { minBalance: 500,  minUsers: 5  },
+      V3: { minBalance: 3000, minUsers: 10 },
+      V4: { minBalance: 10000, minUsers: 0 },
+      V5: { minBalance: 30000, minUsers: 0 },
+      V6: { minBalance: 100000, minUsers: 0 }
+    };
 
-  function fetchUserState(userId) {
-    var url = SB.url + "/rest/v1/user_state?select=current_level,is_locked,locked_reason,is_funded,is_activated&user_id=eq." +
-      encodeURIComponent(userId) + "&limit=1";
-    return fetch(url, { method: "GET", headers: SB.headers() }).then(function (res) {
-      if (!res.ok) return [];
-      return res.json();
-    }).then(function (rows) {
-      return (Array.isArray(rows) && rows[0]) ? rows[0] : null;
-    });
-  }
+    var levelOrderMap = { V0: 0, V1: 1, V2: 2, V3: 3, V4: 4, V5: 5, V6: 6 };
 
-  function setText(el, text) {
-    if (!el) return;
-    el.textContent = text;
-  }
+    function calcMembershipLevel() {
+      var user = getDemoUserInfo();
+      var balance = user.balance;
+      var eff = user.effectiveUsers;
+      var current = "V0";
 
-  function formatUSDT(x) {
-    var n = Number(x || 0);
-    if (!isFinite(n)) n = 0;
-    return n.toFixed(2) + " USDT";
-  }
-
-  // --- UI handles ---
-  var topCard = document.querySelector(".card");
-  var topAmountEl = topCard ? topCard.querySelector(".card-value") : null;
-
-  var cardRowValues = document.querySelectorAll(".card-row .card-value");
-  var timesCardValueEl = cardRowValues && cardRowValues[0] ? cardRowValues[0] : null;
-  var runRoomValueEl  = cardRowValues && cardRowValues[1] ? cardRowValues[1] : null;
-
-  var levelTagEl = document.querySelector(".experience-tag");
-
-  var modal = document.getElementById("runModal");
-  var countdownEl = document.getElementById("runModalCountdown");
-
-  // GPU cards
-  var cards = Array.from(document.querySelectorAll(".gpu-card"));
-  function getCardLevel(cardEl) {
-    // second column -> first row -> value contains V1/V2/...
-    var el = cardEl.querySelector(".gpu-col:nth-child(2) .gpu-row:nth-child(1) .gpu-value");
-    return (el ? el.textContent : "").trim() || "V0";
-  }
-  function getLockTextEl(cardEl) {
-    return cardEl.querySelector(".gpu-lock span:last-child");
-  }
-  function getTodayProfitEl(cardEl) {
-    return cardEl.querySelector(".gpu-value-accent");
-  }
-  function getRunTimesEl(cardEl) {
-    // first column -> 3rd row -> value is 0/2 ...
-    return cardEl.querySelector(".gpu-col:nth-child(1) .gpu-row:nth-child(3) .gpu-value");
-  }
-  function getRunBtn(cardEl) {
-    return cardEl.querySelector(".gpu-button-wrap .btn-gradient");
-  }
-
-  function showModal(seconds) {
-    if (!modal || !countdownEl) return function(){};
-    modal.style.display = "flex";
-    countdownEl.textContent = seconds + "s";
-    return function hide() { modal.style.display = "none"; };
-  }
-
-  function runWithCountdown(seconds, onFinish) {
-    seconds = seconds || 8;
-    var hide = showModal(seconds);
-    var remaining = seconds;
-
-    return new Promise(function (resolve, reject) {
-      var timer = setInterval(function () {
-        remaining -= 1;
-        if (countdownEl) countdownEl.textContent = (remaining >= 0 ? remaining : 0) + "s";
-        if (remaining < 0) {
-          clearInterval(timer);
-          try { hide(); } catch(e){}
-          Promise.resolve().then(onFinish).then(resolve).catch(reject);
+      ["V1","V2","V3"].forEach(function(lvl) {
+        var r = levelRules[lvl];
+        if (balance >= r.minBalance && eff >= r.minUsers) {
+          current = lvl;
         }
-      }, 1000);
-    });
-  }
-
-  function refreshTopSummary(userId) {
-    return rpc("get_assets_summary", { p_user: userId }).then(function (rows) {
-      var s = Array.isArray(rows) ? rows[0] : rows;
-      if (!s) return;
-      // Top card shows total assets
-      setText(topAmountEl, formatUSDT(s.usdt_balance));
-      // Cosmetic cards: show remaining times as "—" and room as current level
-      setText(timesCardValueEl, "—");
-      setText(runRoomValueEl, (currentLevel || "V0"));
-      // Update today's profit on unlocked cards (use today's personal income)
-      cards.forEach(function (c) {
-        var profEl = getTodayProfitEl(c);
-        if (profEl) profEl.textContent = formatUSDT(s.today_personal);
       });
-    }).catch(function () {});
-  }
+      if (current === "V0") { current = "V1"; }
+      return current;
+    }
 
-  var currentLevel = "V0";
-  var currentRank = 0;
-  var locked = false;
-  var lockReason = "";
+    function calcTotalDailyProfit() {
+      var user = getDemoUserInfo();
+      return user.balance * 0.018; // 1.8% of current balance as total daily profit
+    }
 
-  function bindCards(userId) {
-    cards.forEach(function (cardEl) {
-      var lvl = getCardLevel(cardEl);
-      var reqRank = levelRank(lvl);
+    function calcTotalAllowedRuns() {
+      var total = 0;
+      if (Array.isArray(gpuConfigs) && state && state.levels) {
+        gpuConfigs.forEach(function(cfg, idx) {
+          var st = state.levels[idx];
+          if (!st) return;
+          if (st.unlocked && (cfg.levelText === "V1" || cfg.levelText === "V2" || cfg.levelText === "V3")) {
+            total += cfg.maxRuns;
+          }
+        });
+      }
+      return total || 1;
+    }
 
-      var lockTextEl = getLockTextEl(cardEl);
-      var btn = getRunBtn(cardEl);
-      var runTimesEl = getRunTimesEl(cardEl);
 
-      // Only V1–V3 are usable in your backend rules; keep others locked cosmetically.
-      var isUsableLevel = reqRank >= 1 && reqRank <= 3;
+    // --- Daily reset helper ---
+    
+    // --- Supabase (system) crediting for AI Power ---
+    var SUPABASE_URL = "https://oyowsjjmaesspqiknvhp.supabase.co";
+    var SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95b3dzamptYWVzc3BxaWtudmhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MTE4NzcsImV4cCI6MjA4MTM4Nzg3N30.aBo32xNG_dh1QD7NBI4N6jhYFLY42Xyxer2DNXxJi-w";
+    var SB_USER_ID_KEY = "sb_user_id_v1";
 
-      var unlocked = (!locked) && isUsableLevel && (currentRank >= reqRank);
+    function apiHeaders() {
+      return {
+        "apikey": SUPABASE_ANON,
+        "Authorization": "Bearer " + SUPABASE_ANON,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      };
+    }
 
-      if (lockTextEl) lockTextEl.textContent = unlocked ? "Unlocked" : "Not unlocked";
-      if (btn) btn.textContent = unlocked ? "Run" : "Run after unlocking";
-      if (runTimesEl) runTimesEl.textContent = "—";
+    function getSupabaseUserId() {
+      try { return localStorage.getItem(SB_USER_ID_KEY) || ""; } catch (e) { return ""; }
+    }
 
+    async function fetchWalletRow(userId) {
+      var url = SUPABASE_URL + "/rest/v1/wallet_balances?select=usdt_balance,updated_at&user_id=eq." +
+        encodeURIComponent(userId) + "&limit=1";
+      var res = await fetch(url, { method: "GET", headers: apiHeaders() });
+      if (!res.ok) return null;
+      var rows = await res.json();
+      return (Array.isArray(rows) && rows[0]) ? rows[0] : null;
+    }
+
+    async function updateWalletBalance(userId, newBalance) {
+      var url = SUPABASE_URL + "/rest/v1/wallet_balances?user_id=eq." + encodeURIComponent(userId);
+      var res = await fetch(url, {
+        method: "PATCH",
+        headers: Object.assign({}, apiHeaders(), { "Prefer": "return=minimal" }),
+        body: JSON.stringify({ usdt_balance: newBalance, updated_at: new Date().toISOString() })
+      });
+      return res.ok;
+    }
+
+    async function insertWalletBalance(userId, balance) {
+      var url = SUPABASE_URL + "/rest/v1/wallet_balances";
+      var res = await fetch(url, {
+        method: "POST",
+        headers: Object.assign({}, apiHeaders(), { "Prefer": "return=minimal" }),
+        body: JSON.stringify({ user_id: userId, usdt_balance: balance })
+      });
+      return res.ok;
+    }
+
+    async function insertIpowerAction(userId, snapshot, earning) {
+      var url = SUPABASE_URL + "/rest/v1/ipower_actions";
+      var res = await fetch(url, {
+        method: "POST",
+        headers: Object.assign({}, apiHeaders(), { "Prefer": "return=minimal" }),
+        body: JSON.stringify({
+          user_id: userId,
+          action_type: "tap",
+          balance_snapshot: snapshot,
+          earning_amount: earning
+        })
+      });
+      return res.ok;
+    }
+
+    async function applyIpowerProfit(profit) {
+      var p = Number(profit);
+      if (!isFinite(p) || p <= 0) throw new Error("Invalid profit");
+      var userId = getSupabaseUserId();
+      if (!userId) throw new Error("Missing user session");
+
+      var row = await fetchWalletRow(userId);
+      var snapshot = row && row.usdt_balance != null ? Number(row.usdt_balance) : 0;
+      if (!isFinite(snapshot)) snapshot = 0;
+
+      var newBal = snapshot + p;
+
+      // 1) Log action in ipower_actions (system table)
+      await insertIpowerAction(userId, snapshot, p);
+
+      // 2) Credit wallet_balances
+      var ok = await updateWalletBalance(userId, newBal);
+      if (!ok) {
+        // If row doesn't exist yet, try insert then update
+        await insertWalletBalance(userId, newBal);
+        await updateWalletBalance(userId, newBal);
+      }
+
+      // 3) Sync local demoBalance so membership UI stays consistent
+      try { localStorage.setItem("demoBalance", String(newBal.toFixed(2))); } catch (e) {}
+      return newBal;
+    }
+
+var todayStr = new Date().toISOString().slice(0, 10);
+
+    var gpuCardEls = document.querySelectorAll(".gpu-card");
+    if (!gpuCardEls.length) return;
+
+    var stateKey = "aiPowerState_v1";
+
+    var topCard = document.querySelector(".card");
+    var topAmountEl = topCard ? topCard.querySelector(".card-value") : null;
+
+    var cardRowValues = document.querySelectorAll(".card-row .card-value");
+    var timesCardValueEl = cardRowValues[0] || null;
+    var runRoomValueEl = cardRowValues[1] || null;
+
+    var levelTagEl = document.querySelector(".experience-tag");
+
+    var gpuConfigs = [];
+    var defaultState = {
+      currentLevelIndex: -1,
+      lastRunDate: todayStr,
+      levels: []
+    };
+
+    gpuCardEls.forEach(function(cardEl, index) {
+      var rightCol = cardEl.querySelectorAll(".gpu-col")[1];
+      var leftCol = cardEl.querySelectorAll(".gpu-col")[0];
+      if (!rightCol || !leftCol) return;
+
+      var levelEl = rightCol.querySelector(".gpu-row:nth-child(1) .gpu-value");
+      var levelText = levelEl ? levelEl.textContent.trim() : "V" + (index + 1);
+
+      var runTimesEl = leftCol.querySelector(".gpu-row:nth-child(3) .gpu-value");
+      var runTimesText = runTimesEl ? runTimesEl.textContent.trim() : "0/0";
+      var match = runTimesText.match(/\/(\d+)/);
+      var maxRuns = match ? parseInt(match[1], 10) : 0;
+
+      var runningAmountEl = leftCol.querySelector(".gpu-row:nth-child(2) .gpu-value");
+      var runningAmountText = runningAmountEl ? runningAmountEl.textContent : "";
+      var nums = runningAmountText.match(/\d+/g) || [];
+      var minAmount = nums[0] ? parseFloat(nums[0]) : 0;
+      var maxAmount = nums[1] ? parseFloat(nums[1]) : minAmount;
+      var baseAmount = (minAmount + maxAmount) / 2;
+
+      var rateEl = rightCol.querySelector(".gpu-row:nth-child(2) .gpu-value");
+      var rateText = rateEl ? rateEl.textContent : "";
+      var rateMatches = rateText.match(/([\d.]+)%/g) || [];
+      var rateMin = rateMatches[0] ? parseFloat(rateMatches[0]) : 0;
+      var rateMax = rateMatches[1] ? parseFloat(rateMatches[1]) : rateMin;
+
+      gpuConfigs.push({
+        index: index,
+        levelText: levelText,
+        maxRuns: maxRuns,
+        baseAmount: baseAmount,
+        rateMin: rateMin,
+        rateMax: rateMax,
+        cardEl: cardEl
+      });
+
+      defaultState.levels.push({
+        unlocked: false,
+        runsToday: 0,
+        todayProfit: 0
+      });
+    });
+
+    function clone(obj) {
+      return JSON.parse(JSON.stringify(obj));
+    }
+
+    function loadState() {
+      try {
+        var raw = localStorage.getItem(stateKey);
+        if (raw) {
+          var parsed = JSON.parse(raw);
+          if (parsed && Array.isArray(parsed.levels) && parsed.levels.length === defaultState.levels.length) {
+            // Handle daily reset
+            if (parsed.lastRunDate !== todayStr) {
+              parsed.levels.forEach(function(lvl) {
+                lvl.runsToday = 0;
+                lvl.todayProfit = 0;
+              });
+              parsed.lastRunDate = todayStr;
+            }
+            return parsed;
+          }
+        }
+      } catch (e) {}
+      return clone(defaultState);
+    }
+
+    var state = loadState();
+
+    // Determine membership-based access
+    var membershipLevel = calcMembershipLevel();
+    var membershipRank = levelOrderMap[membershipLevel] || 0;
+
+    // Update unlocks based on membership (V1–V3 only)
+    gpuConfigs.forEach(function(cfg, i) {
+      var lvlText = cfg.levelText;
+      var reqRank = levelOrderMap[lvlText] || 0;
+      var st = state.levels[i];
+      if (!st) return;
+      // Only levels up to V3 can ever be unlocked; V4+ stay cosmetic
+      if (reqRank > 3 || membershipRank === 0 || membershipRank < reqRank) {
+        st.unlocked = false;
+      } else {
+        st.unlocked = true;
+      }
+      state.levels[i] = st;
+    });
+
+    // Sync currentLevelIndex with membership
+    var currentIdx = -1;
+    gpuConfigs.forEach(function(cfg, i) {
+      if (cfg.levelText === membershipLevel) {
+        currentIdx = i;
+      }
+    });
+    state.currentLevelIndex = currentIdx;
+
+    function saveState() {
+      try {
+        localStorage.setItem(stateKey, JSON.stringify(state));
+      } catch (e) {}
+    }
+
+    function setCurrentLevel(index) {
+      state.currentLevelIndex = index;
+      gpuConfigs.forEach(function(cfg, i) {
+        var lockTextEl = cfg.cardEl.querySelector(".gpu-lock span:last-child");
+        if (!lockTextEl) return;
+        if (state.levels[i].unlocked) {
+          lockTextEl.textContent = "Unlocked";
+        } else {
+          lockTextEl.textContent = "Not unlocked";
+        }
+      });
+      if (levelTagEl) {
+        var currentLabel = index >= 0 ? gpuConfigs[index].levelText : "V0";
+        levelTagEl.textContent = "Level:" + currentLabel;
+      }
+    }
+
+    function updateSummary() {
+      var totalAmountLeft = 0;
+      var totalRunsLeft = 0;
+
+      gpuConfigs.forEach(function(cfg, i) {
+        var st = state.levels[i];
+        var profitEl = cfg.cardEl.querySelector(".gpu-value-accent");
+        var runTimesEl = cfg.cardEl.querySelector(".gpu-col:first-child .gpu-row:nth-child(3) .gpu-value");
+
+        if (profitEl) {
+          profitEl.textContent = st.todayProfit.toFixed(2) + " USDT";
+        }
+        if (runTimesEl) {
+          runTimesEl.textContent = st.runsToday + "/" + cfg.maxRuns;
+        }
+
+        if (st.unlocked) {
+          var remainingRuns = Math.max(cfg.maxRuns - st.runsToday, 0);
+          totalRunsLeft += remainingRuns;
+          totalAmountLeft += remainingRuns * cfg.baseAmount;
+        }
+      });
+
+      if (topAmountEl) {
+        topAmountEl.textContent = totalAmountLeft.toFixed(2);
+      }
+
+      if (timesCardValueEl) {
+        timesCardValueEl.textContent = totalRunsLeft + " Times";
+      }
+
+      if (runRoomValueEl) {
+        runRoomValueEl.textContent =
+          state.currentLevelIndex >= 0 ? gpuConfigs[state.currentLevelIndex].levelText : "—";
+      }
+    }
+
+    setCurrentLevel(state.currentLevelIndex);
+    updateSummary();
+
+    gpuConfigs.forEach(function(cfg, i) {
+      var btn = cfg.cardEl.querySelector(".gpu-button-wrap .btn-gradient");
       if (!btn) return;
 
-      btn.addEventListener("click", function () {
-        if (locked) {
-          alert(lockReason || "Account is locked.");
-          return;
-        }
-        if (!unlocked) {
+      function setButtonText() {
+        btn.textContent = state.levels[i].unlocked ? "Run" : "Run after unlocking";
+      }
+      setButtonText();
+
+      btn.addEventListener("click", function() {
+        var st = state.levels[i];
+
+        // Membership-locked levels cannot be manually unlocked
+        if (!st.unlocked) {
           alert("This computing power package is locked. Please upgrade your member level to use it.");
           return;
         }
 
+        // 3-day no-recharge check (optional demo)
+        var lastRecharge = localStorage.getItem("demoLastRechargeAt");
+        if (lastRecharge) {
+          try {
+            var last = new Date(lastRecharge);
+            var now = new Date();
+            var diffDays = (now - last) / (1000 * 60 * 60 * 24);
+            if (diffDays > 3) {
+              alert("Your account has not been recharged for more than 3 days. Please recharge to continue running AI Power.");
+              return;
+            }
+          } catch (e) {}
+        }
+
+        if (st.runsToday >= cfg.maxRuns) {
+          alert("No run times left today for this level.");
+          return;
+        }
+
+        var duration = 8;
         btn.disabled = true;
-        runWithCountdown(8, function () {
-          return rpc("perform_ipower_action", { p_user: userId });
-        }).then(function (rows) {
-          var r = Array.isArray(rows) ? rows[0] : rows;
-          // r has earning_amount & new_balance in your SQL
-          var earned = r && (r.earning_amount ?? r.earning_amount === 0 ? r.earning_amount : null);
-          var newBal = r && (r.new_balance ?? null);
+        var originalText = "Run";
 
-          // Update UI quickly
-          if (newBal != null) setText(topAmountEl, formatUSDT(newBal));
-          if (earned != null) {
-            var profEl = getTodayProfitEl(cardEl);
-            if (profEl) profEl.textContent = formatUSDT(earned); // shows last run earning (safe)
-            alert("Run completed. Profit +" + Number(earned).toFixed(2) + " USDT");
-          } else {
-            alert("Run completed.");
+        // Show modal
+        var modal = document.getElementById("runModal");
+        var countdownEl = document.getElementById("runModalCountdown");
+        if (modal && countdownEl) {
+          modal.style.display = "flex";
+          countdownEl.textContent = duration + "s";
+        }
+
+        function tick() {
+          duration--;
+          if (countdownEl) {
+            countdownEl.textContent = (duration >= 0 ? duration : 0) + "s";
           }
+          if (duration < 0) {
+            clearInterval(timer);
+            finishRun();
+          }
+        }
 
-          // Refresh totals (today/total/team) via summary
-          return refreshTopSummary(userId);
-        }).catch(function (err) {
-          var msg = (err && err.message) ? err.message : String(err || "Run failed");
-          // Make backend errors readable
-          alert(msg);
-        }).finally(function () {
+        var timer = setInterval(tick, 1000);
+
+        function finishRun() {
           btn.disabled = false;
-        });
+          btn.textContent = originalText;
+          if (modal) {
+            modal.style.display = "none";
+          }
+          st.runsToday += 1;
+
+          var rate = cfg.rateMin + Math.random() * (cfg.rateMax - cfg.rateMin);
+          var profit = cfg.baseAmount * (rate / 100) / Math.max(cfg.maxRuns, 1);
+          st.todayProfit += profit;
+
+          // System (Supabase): record action + credit wallet balance
+          applyIpowerProfit(profit).catch(function(err) {
+            // Fallback: keep offline demo moving if user is not logged in / API blocked
+            try { console.warn("applyIpowerProfit failed:", err && err.message ? err.message : err); } catch (e) {}
+            if (window.DemoWallet && typeof window.DemoWallet.addIncome === 'function') {
+              window.DemoWallet.addIncome(1);
+            }
+          });
+
+          state.levels[i] = st;
+          saveState();
+          updateSummary();
+
+          alert(
+            "Run completed. Profit +" +
+              profit.toFixed(2) +
+              " USDT"
+          );
+        }
       });
     });
-  }
-
-  // Init
-  getUserId().then(function (userId) {
-    if (!userId) {
-      alert("Please login first.");
-      window.location.href = "login.html";
-      return;
-    }
-
-    return fetchUserState(userId).then(function (st) {
-      currentLevel = (st && st.current_level) ? String(st.current_level).toUpperCase() : "V0";
-      currentRank = levelRank(currentLevel);
-      locked = !!(st && st.is_locked);
-      lockReason = (st && st.locked_reason) ? String(st.locked_reason) : "";
-
-      if (levelTagEl) levelTagEl.textContent = "Level:" + currentLevel;
-      setText(runRoomValueEl, currentLevel);
-
-      bindCards(userId);
-      return refreshTopSummary(userId);
-    });
-  }).catch(function (e) {
-    console.error(e);
-  });
-
-})();
+  })();
 </script>
 
+<!-- Authentication helpers -->
+<script src="auth.js"></script>
 <!-- Enforce login redirects -->
 <script src="common-nav.js"></script>
 </body>
