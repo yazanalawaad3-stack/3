@@ -830,11 +830,242 @@
 <script src="sb-config.js"></script>
 <!-- Wallet helpers -->
 <script src="wallet.js"></script>
-<!-- AI Power binding (RPC-based) -->
-<script src="ai-power-helper.js"></script>
+
+<script>
+;(function () {
+  "use strict";
+
+  var SB = window.SB_CONFIG;
+  if (!SB) {
+    console.error("SB_CONFIG missing (sb-config.js not loaded)");
+    return;
+  }
+
+  function rpc(name, body) {
+    return fetch(SB.url + "/rest/v1/rpc/" + name, {
+      method: "POST",
+      headers: SB.headers(),
+      body: JSON.stringify(body || {})
+    }).then(async function (res) {
+      var txt = await res.text();
+      if (!res.ok) {
+        // Supabase often returns plain text or JSON error
+        try {
+          var j = JSON.parse(txt);
+          throw new Error(j.message || j.error || txt || ("RPC " + name + " failed"));
+        } catch (e) {
+          throw new Error(txt || ("RPC " + name + " failed"));
+        }
+      }
+      try { return JSON.parse(txt); } catch (e) { return txt; }
+    });
+  }
+
+  function getUserId() {
+    if (!window.ExaAuth || typeof window.ExaAuth.ensureSupabaseUserId !== "function") {
+      return Promise.resolve("");
+    }
+    return window.ExaAuth.ensureSupabaseUserId().then(function (uid) { return uid || ""; });
+  }
+
+  function levelRank(lvl) {
+    var map = { V0:0, V1:1, V2:2, V3:3, V4:4, V5:5, V6:6 };
+    return map[(lvl || "").toUpperCase()] ?? 0;
+  }
+
+  function fetchUserState(userId) {
+    var url = SB.url + "/rest/v1/user_state?select=current_level,is_locked,locked_reason,is_funded,is_activated&user_id=eq." +
+      encodeURIComponent(userId) + "&limit=1";
+    return fetch(url, { method: "GET", headers: SB.headers() }).then(function (res) {
+      if (!res.ok) return [];
+      return res.json();
+    }).then(function (rows) {
+      return (Array.isArray(rows) && rows[0]) ? rows[0] : null;
+    });
+  }
+
+  function setText(el, text) {
+    if (!el) return;
+    el.textContent = text;
+  }
+
+  function formatUSDT(x) {
+    var n = Number(x || 0);
+    if (!isFinite(n)) n = 0;
+    return n.toFixed(2) + " USDT";
+  }
+
+  // --- UI handles ---
+  var topCard = document.querySelector(".card");
+  var topAmountEl = topCard ? topCard.querySelector(".card-value") : null;
+
+  var cardRowValues = document.querySelectorAll(".card-row .card-value");
+  var timesCardValueEl = cardRowValues && cardRowValues[0] ? cardRowValues[0] : null;
+  var runRoomValueEl  = cardRowValues && cardRowValues[1] ? cardRowValues[1] : null;
+
+  var levelTagEl = document.querySelector(".experience-tag");
+
+  var modal = document.getElementById("runModal");
+  var countdownEl = document.getElementById("runModalCountdown");
+
+  // GPU cards
+  var cards = Array.from(document.querySelectorAll(".gpu-card"));
+  function getCardLevel(cardEl) {
+    // second column -> first row -> value contains V1/V2/...
+    var el = cardEl.querySelector(".gpu-col:nth-child(2) .gpu-row:nth-child(1) .gpu-value");
+    return (el ? el.textContent : "").trim() || "V0";
+  }
+  function getLockTextEl(cardEl) {
+    return cardEl.querySelector(".gpu-lock span:last-child");
+  }
+  function getTodayProfitEl(cardEl) {
+    return cardEl.querySelector(".gpu-value-accent");
+  }
+  function getRunTimesEl(cardEl) {
+    // first column -> 3rd row -> value is 0/2 ...
+    return cardEl.querySelector(".gpu-col:nth-child(1) .gpu-row:nth-child(3) .gpu-value");
+  }
+  function getRunBtn(cardEl) {
+    return cardEl.querySelector(".gpu-button-wrap .btn-gradient");
+  }
+
+  function showModal(seconds) {
+    if (!modal || !countdownEl) return function(){};
+    modal.style.display = "flex";
+    countdownEl.textContent = seconds + "s";
+    return function hide() { modal.style.display = "none"; };
+  }
+
+  function runWithCountdown(seconds, onFinish) {
+    seconds = seconds || 8;
+    var hide = showModal(seconds);
+    var remaining = seconds;
+
+    return new Promise(function (resolve, reject) {
+      var timer = setInterval(function () {
+        remaining -= 1;
+        if (countdownEl) countdownEl.textContent = (remaining >= 0 ? remaining : 0) + "s";
+        if (remaining < 0) {
+          clearInterval(timer);
+          try { hide(); } catch(e){}
+          Promise.resolve().then(onFinish).then(resolve).catch(reject);
+        }
+      }, 1000);
+    });
+  }
+
+  function refreshTopSummary(userId) {
+    return rpc("get_assets_summary", { p_user: userId }).then(function (rows) {
+      var s = Array.isArray(rows) ? rows[0] : rows;
+      if (!s) return;
+      // Top card shows total assets
+      setText(topAmountEl, formatUSDT(s.usdt_balance));
+      // Cosmetic cards: show remaining times as "—" and room as current level
+      setText(timesCardValueEl, "—");
+      setText(runRoomValueEl, (currentLevel || "V0"));
+      // Update today's profit on unlocked cards (use today's personal income)
+      cards.forEach(function (c) {
+        var profEl = getTodayProfitEl(c);
+        if (profEl) profEl.textContent = formatUSDT(s.today_personal);
+      });
+    }).catch(function () {});
+  }
+
+  var currentLevel = "V0";
+  var currentRank = 0;
+  var locked = false;
+  var lockReason = "";
+
+  function bindCards(userId) {
+    cards.forEach(function (cardEl) {
+      var lvl = getCardLevel(cardEl);
+      var reqRank = levelRank(lvl);
+
+      var lockTextEl = getLockTextEl(cardEl);
+      var btn = getRunBtn(cardEl);
+      var runTimesEl = getRunTimesEl(cardEl);
+
+      // Only V1–V3 are usable in your backend rules; keep others locked cosmetically.
+      var isUsableLevel = reqRank >= 1 && reqRank <= 3;
+
+      var unlocked = (!locked) && isUsableLevel && (currentRank >= reqRank);
+
+      if (lockTextEl) lockTextEl.textContent = unlocked ? "Unlocked" : "Not unlocked";
+      if (btn) btn.textContent = unlocked ? "Run" : "Run after unlocking";
+      if (runTimesEl) runTimesEl.textContent = "—";
+
+      if (!btn) return;
+
+      btn.addEventListener("click", function () {
+        if (locked) {
+          alert(lockReason || "Account is locked.");
+          return;
+        }
+        if (!unlocked) {
+          alert("This computing power package is locked. Please upgrade your member level to use it.");
+          return;
+        }
+
+        btn.disabled = true;
+        runWithCountdown(8, function () {
+          return rpc("perform_ipower_action", { p_user: userId });
+        }).then(function (rows) {
+          var r = Array.isArray(rows) ? rows[0] : rows;
+          // r has earning_amount & new_balance in your SQL
+          var earned = r && (r.earning_amount ?? r.earning_amount === 0 ? r.earning_amount : null);
+          var newBal = r && (r.new_balance ?? null);
+
+          // Update UI quickly
+          if (newBal != null) setText(topAmountEl, formatUSDT(newBal));
+          if (earned != null) {
+            var profEl = getTodayProfitEl(cardEl);
+            if (profEl) profEl.textContent = formatUSDT(earned); // shows last run earning (safe)
+            alert("Run completed. Profit +" + Number(earned).toFixed(2) + " USDT");
+          } else {
+            alert("Run completed.");
+          }
+
+          // Refresh totals (today/total/team) via summary
+          return refreshTopSummary(userId);
+        }).catch(function (err) {
+          var msg = (err && err.message) ? err.message : String(err || "Run failed");
+          // Make backend errors readable
+          alert(msg);
+        }).finally(function () {
+          btn.disabled = false;
+        });
+      });
+    });
+  }
+
+  // Init
+  getUserId().then(function (userId) {
+    if (!userId) {
+      alert("Please login first.");
+      window.location.href = "login.html";
+      return;
+    }
+
+    return fetchUserState(userId).then(function (st) {
+      currentLevel = (st && st.current_level) ? String(st.current_level).toUpperCase() : "V0";
+      currentRank = levelRank(currentLevel);
+      locked = !!(st && st.is_locked);
+      lockReason = (st && st.locked_reason) ? String(st.locked_reason) : "";
+
+      if (levelTagEl) levelTagEl.textContent = "Level:" + currentLevel;
+      setText(runRoomValueEl, currentLevel);
+
+      bindCards(userId);
+      return refreshTopSummary(userId);
+    });
+  }).catch(function (e) {
+    console.error(e);
+  });
+
+})();
+</script>
 
 <!-- Authentication helpers -->
-
 <script src="auth.js"></script>
 <!-- Enforce login redirects -->
 <script src="common-nav.js"></script>
