@@ -336,7 +336,7 @@
           if (!code) return;
 
           codeEl.textContent = code;
-          linkEl.textContent = window.location.origin + "/signup.html?code=" + encodeURIComponent(code);
+          linkEl.textContent = ((window.location.origin || '') + (window.location.pathname || '').replace(/\/[^\/]*$/, '/')) + "signup.html?code=" + encodeURIComponent(code);
         } catch (e) {
           try { console.error(e); } catch (_) {}
         }
