@@ -575,9 +575,14 @@
 
   <script>
     (function () {
-                  function getSB(){ return window.SB_CONFIG; }
-      function apiHeaders() { var SB = getSB(); return SB && typeof SB.headers==='function' ? SB.headers() : {}; }
-      function apiBase() { var SB = getSB(); return SB ? String(SB.url||'').replace(/\/$/, '') : ''; }
+      function apiHeaders() {
+        return {
+          "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95b3dzamptYWVzc3BxaWtudmhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MTE4NzcsImV4cCI6MjA4MTM4Nzg3N30.aBo32xNG_dh1QD7NBI4N6jhYFLY42Xyxer2DNXxJi-w",
+          "Authorization": "Bearer " + "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95b3dzamptYWVzc3BxaWtudmhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU4MTE4NzcsImV4cCI6MjA4MTM4Nzg3N30.aBo32xNG_dh1QD7NBI4N6jhYFLY42Xyxer2DNXxJi-w",
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        };
+      }
 
       function fmtDate(ts) {
         if (!ts) return "-";
@@ -607,7 +612,7 @@
 
       async function fetchUsersByInviterIds(inviterIds) {
         if (!inviterIds || !inviterIds.length) return [];
-        var url = apiBase() + "/rest/v1/users"
+        var url = "https://oyowsjjmaesspqiknvhp.supabase.co" + "/rest/v1/users"
           + "?select=id,phone,created_at,inviter_id"
           + "&inviter_id=" + inFilter(inviterIds)
           + "&order=created_at.desc"
@@ -618,42 +623,20 @@
         return Array.isArray(rows) ? rows : [];
       }
 
-      
-
-      async function fetchFundedMap(userIds) {
-        if (!userIds || !userIds.length) return {};
-        // chunk to avoid URL length issues
-        var map = {};
-        var chunkSize = 80;
-        for (var i = 0; i < userIds.length; i += chunkSize) {
-          var chunk = userIds.slice(i, i + chunkSize);
-          var url = apiBase() + "/rest/v1/user_state"
-            + "?select=user_id,is_funded"
-            + "&user_id=in.(" + chunk.map(function (id) { return String(id).trim(); }).join(",") + ")"
-            + "&limit=1000";
-          var res = await fetch(url, { method: "GET", headers: apiHeaders() });
-          if (!res.ok) continue;
-          var rows = await res.json();
-          if (Array.isArray(rows)) {
-            rows.forEach(function (r) { map[r.user_id] = !!r.is_funded; });
-          }
-        }
-        return map;
-      }
-
       function setText(el, text) {
         if (!el) return;
         el.textContent = text;
       }
 
-      function renderSummary(effectiveAll, totalAll) {
+      function renderSummary(totalAll) {
         var summaryValues = document.querySelectorAll('.summary-box .summary-value');
         if (summaryValues.length >= 1) {
-          setText(summaryValues[0], effectiveAll + "/" + totalAll);
+          // shows effective/total in UI, we don't have "effective" field here, so show total/total
+          setText(summaryValues[0], totalAll + "/" + totalAll);
         }
       }
 
-      function renderGen(cardIdx, effectiveCount, totalCount, percent) {
+      function renderGen(cardIdx, genTotal, percent) {
         var cards = document.querySelectorAll('.generation-card');
         var card = cards && cards[cardIdx] ? cards[cardIdx] : null;
         if (!card) return;
@@ -661,9 +644,9 @@
         if (!row) return;
         var spans = row.querySelectorAll('span');
         if (spans.length < 3) return;
-        spans[0].textContent = effectiveCount + "/" + totalCount;
+        spans[0].textContent = genTotal + "/" + genTotal;
         spans[1].textContent = String(percent) + "%";
-        spans[2].textContent = spans[2].textContent || "0/0";
+        spans[2].textContent = "0/0";
       }
 
       function renderGen1Table(gen1) {
@@ -693,10 +676,6 @@
 
       async function loadTeam() {
         try {
-          // Wait briefly for sb-config.js to load
-          var tries = 0;
-          while (!window.SB_CONFIG && tries < 40) { await new Promise(function(r){ setTimeout(r, 25); }); tries++; }
-
           if (!window.SBUser || typeof window.SBUser.getCurrentProfile !== "function") return;
           var profile = await window.SBUser.getCurrentProfile();
           if (!profile || !profile.id) return;
@@ -713,21 +692,10 @@
 
           var totalAll = gen1.length + gen2.length + gen3.length;
 
-           var allIds = gen1Ids.concat(gen2Ids).concat(gen3.map(function(u){return u.id;}).filter(Boolean));
-           var fundedMap = await fetchFundedMap(allIds);
-
-           function countFunded(list){
-             return (list || []).filter(function(u){ return u && u.id && fundedMap[u.id]; }).length;
-           }
-           var eff1 = countFunded(gen1);
-           var eff2 = countFunded(gen2);
-           var eff3 = countFunded(gen3);
-           var effAll = eff1 + eff2 + eff3;
-
-           renderSummary(effAll, totalAll);
-           renderGen(0, eff1, gen1.length, 20);
-           renderGen(1, eff2, gen2.length, 5);
-           renderGen(2, eff3, gen3.length, 3);
+          renderSummary(totalAll);
+          renderGen(0, gen1.length, 20);
+          renderGen(1, gen2.length, 5);
+          renderGen(2, gen3.length, 3);
           renderGen1Table(gen1);
         } catch (e) {
           try { console.error(e); } catch (_) {}

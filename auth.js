@@ -111,13 +111,6 @@
     return el ? String(el.value || '').trim() : '';
   }
 
-  function readInviteFromUrl() {
-    try {
-      var q = new URLSearchParams(window.location.search || '');
-      return String(q.get('invite') || q.get('code') || q.get('inviter') || q.get('inv') || '').trim();
-    } catch (e) { return ''; }
-  }
-
   async function fetchUserByPhone(phone) {
     if (!phone) return null;
     var url =
@@ -161,7 +154,7 @@
   async function registerWithInvite(opts) {
     opts = opts || {};
     var usedInviteCode =
-      (opts.usedInviteCode != null ? String(opts.usedInviteCode) : String(readInviteFromPage() || readInviteFromUrl() || '')).trim() || null;
+      (opts.usedInviteCode != null ? String(opts.usedInviteCode) : String(readInviteFromPage() || '')).trim() || null;
 
     var phone = (opts.phone != null ? String(opts.phone) : '').trim();
     if (!phone) {
