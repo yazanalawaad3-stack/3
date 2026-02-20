@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Lux Dashboard • Analytics</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Bootstrap (layout utilities) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- Font Awesome Icons -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet" />
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body class="lux-body">
+  <div class="lux-ai-bg" aria-hidden="true"></div>
+
+  <div class="lux-app lux-app--page">
+    <!-- Top overlay: ID chip (keeps the same unified feel) -->
+    <div class="lux-top-id" aria-label="User ID">
+      <div class="lux-id-chip" role="group" aria-label="User ID">
+        <span class="lux-id-label">ID</span>
+        <span class="lux-id-value" id="userIdValue">750899</span>
+        <button class="lux-id-copy" id="copyUserIdBtn" type="button" aria-label="Copy ID">
+          <i class="fa-regular fa-copy" aria-hidden="true"></i>
+        </button>
+      </div>
+    </div>
+
+    <header class="lux-page-header">
+      <div class="container px-3">
+        <div class="lux-page-top">
+          <a class="lux-back" href="./index000.html" aria-label="Back to Home">
+            <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+          </a>
+
+          <div class="lux-page-titles">
+            <div class="lux-page-title">Analytics</div>
+            <div class="lux-page-sub">Activity Log • Mobile-first</div>
+          </div>
+
+          <button class="lux-icon-btn" id="refreshBtn" type="button" aria-label="Refresh">
+            <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <div class="lux-filter-card" role="region" aria-label="Log filters">
+          <div class="lux-filter-row">
+            <button class="lux-chip" id="dateChipBtn" type="button" aria-label="Pick date">
+              <i class="fa-regular fa-calendar me-2" aria-hidden="true"></i>
+              <span id="selectedDateText">Today</span>
+            </button>
+
+            <button class="lux-chip lux-chip--ghost" id="todayBtn" type="button" aria-label="Jump to today">
+              Today
+            </button>
+
+            <div class="lux-live-pill" aria-label="Live status">
+              <span class="lux-dot" aria-hidden="true"></span>
+              <span id="liveText">Updated for today</span>
+            </div>
+
+            <!-- Native date picker (hidden, triggered by chip) -->
+            <input class="lux-date-input" id="dateInput" type="date" aria-label="Date" />
+          </div>
+
+          <div class="lux-filter-meta">
+            <span class="lux-meta-muted">Showing</span>
+            <span class="lux-meta-strong" id="countText">0</span>
+            <span class="lux-meta-muted">events</span>
+            <span class="lux-meta-sep">•</span>
+            <span class="lux-meta-muted">Last updated</span>
+            <span class="lux-meta-strong" id="updatedAt">—</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="lux-main">
+      <div class="container px-3">
+        <section class="lux-log" aria-label="Activity log list">
+          <div class="lux-log-list" id="logList" aria-live="polite"></div>
+
+          <div class="lux-empty-state" id="emptyState" hidden>
+            <div class="lux-empty-ic"><i class="fa-solid fa-inbox"></i></div>
+            <div class="lux-empty-title">No activity for this date</div>
+            <div class="lux-empty-sub">Try another date, or switch back to Today.</div>
+          </div>
+
+          <div class="lux-dev-note" aria-label="Developer note">
+            <div class="lux-dev-note-title">
+              <i class="fa-solid fa-plug me-2" aria-hidden="true"></i>
+              Ready for real data
+            </div>
+            <div class="lux-dev-note-sub">
+              This page is prepared to receive real analytics/events later (API, database, websocket, etc.).
+              For now it uses demo data to match the final UI.
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Toast -->
+    <div class="lux-toast" id="luxToast" role="status" aria-live="polite" aria-atomic="true">
+      <div class="lux-toast-inner">
+        <i class="fa-solid fa-sparkles me-2"></i>
+        <span id="toastText">Done</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="./analytics.js"></script>
+</body>
+</html>
