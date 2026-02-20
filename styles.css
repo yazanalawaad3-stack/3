@@ -1337,3 +1337,12 @@ body{
 body.lux-solid-bg{
   background: #000 !important;
 }
+
+
+/* Analytics page tweaks (reduce top spacing) */
+.lux-analytics-page .lux-page-header{
+  padding: 10px 0 6px;
+}
+.lux-analytics-page .lux-page-top{
+  margin-bottom: 8px;
+}

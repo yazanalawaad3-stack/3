@@ -201,15 +201,41 @@
 
   function openNativeDate(){
     if(!dateInput) return;
+
+    // Ensure the picker opens reliably (some browsers ignore offscreen inputs)
     dateInput.value = selectedISO;
-    // In some browsers showPicker is supported
-    if(typeof dateInput.showPicker === 'function'){
-      dateInput.showPicker();
-    }else{
-      dateInput.focus();
-      dateInput.click();
+
+    const prevStyle = dateInput.getAttribute('style') || '';
+    // Temporarily place a tiny, invisible input on-screen
+    dateInput.style.position = 'fixed';
+    dateInput.style.left = '8px';
+    dateInput.style.top = '8px';
+    dateInput.style.width = '1px';
+    dateInput.style.height = '1px';
+    dateInput.style.opacity = '0';
+    dateInput.style.pointerEvents = 'auto';
+    dateInput.style.zIndex = '9999';
+
+    try{
+      if(typeof dateInput.showPicker === 'function'){
+        dateInput.showPicker();
+      }else{
+        dateInput.focus({preventScroll:true});
+        dateInput.click();
+      }
+    }catch(_e){
+      try{
+        dateInput.focus({preventScroll:true});
+        dateInput.click();
+      }catch(__e){}
     }
+
+    // Restore style shortly after
+    window.setTimeout(() => {
+      dateInput.setAttribute('style', prevStyle);
+    }, 250);
   }
+
 
   function setDate(iso){
     selectedISO = iso;
