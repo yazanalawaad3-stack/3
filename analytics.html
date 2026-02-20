@@ -19,22 +19,9 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 
-<body class="lux-body">
-  <div class="lux-ai-bg" aria-hidden="true"></div>
-
-  <div class="lux-app lux-app--page">
-    <!-- Top overlay: ID chip (keeps the same unified feel) -->
-    <div class="lux-top-id" aria-label="User ID">
-      <div class="lux-id-chip" role="group" aria-label="User ID">
-        <span class="lux-id-label">ID</span>
-        <span class="lux-id-value" id="userIdValue">750899</span>
-        <button class="lux-id-copy" id="copyUserIdBtn" type="button" aria-label="Copy ID">
-          <i class="fa-regular fa-copy" aria-hidden="true"></i>
-        </button>
-      </div>
-    </div>
-
-    <header class="lux-page-header">
+<body class="lux-body lux-solid-bg">
+<div class="lux-app lux-app--page">
+<header class="lux-page-header">
       <div class="container px-3">
         <div class="lux-page-top">
           <a class="lux-back" href="./index000.html" aria-label="Back to Home">
@@ -57,12 +44,7 @@
               <i class="fa-regular fa-calendar me-2" aria-hidden="true"></i>
               <span id="selectedDateText">Today</span>
             </button>
-
-            <button class="lux-chip lux-chip--ghost" id="todayBtn" type="button" aria-label="Jump to today">
-              Today
-            </button>
-
-            <div class="lux-live-pill" aria-label="Live status">
+<div class="lux-live-pill" aria-label="Live status">
               <span class="lux-dot" aria-hidden="true"></span>
               <span id="liveText">Updated for today</span>
             </div>

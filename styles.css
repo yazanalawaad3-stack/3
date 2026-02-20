@@ -1331,3 +1331,9 @@ body{
   color: var(--muted2);
   line-height: 1.5;
 }
+
+
+/* Solid black background (used for Analytics page) */
+body.lux-solid-bg{
+  background: #000 !important;
+}
